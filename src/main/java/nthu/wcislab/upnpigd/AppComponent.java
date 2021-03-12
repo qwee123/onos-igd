@@ -64,7 +64,7 @@ public class AppComponent {
 
     private IGDPacketProcessor processor = new IGDPacketProcessor();
 
-    private HttpServer httpServer;
+    private WebSocketServer wsServer;
 
     @Activate
     protected void activate() {
@@ -100,16 +100,16 @@ public class AppComponent {
     }
 
     private void startServer() {
-        httpServer = new HttpServer(11426);
+        wsServer = new WebSocketServer(11426);
         try {
-            httpServer.run();
+            wsServer.run();
         } catch (Exception e) {
             log.info("got exception {}", e);
         }
     }
 
     private void stopServer() {
-        httpServer.stop();
+        wsServer.stop();
     }
 
     private class IGDPacketProcessor implements PacketProcessor {

@@ -4,11 +4,9 @@
 </file>
 <file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/package-info.java">
 </file>
-<file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/HttpServerHandler.java">
+<file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/WebSocketServer.java">
 </file>
-<file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/RequestUtils.java">
-</file>
-<file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/HttpServer.java">
+<file name="/home/upnpigd/src/main/java/nthu/wcislab/upnpigd/WebSocketServerHandler.java">
 </file>
 <file name="/home/upnpigd/src/test/java/nthu/wcislab/upnpigd/AppComponentTest.java">
 </file>
