@@ -5,12 +5,14 @@ import static io.netty.handler.codec.http.HttpResponseStatus.CONTINUE;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
@@ -19,42 +21,58 @@ import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.util.CharsetUtil;
+import io.netty.handler.codec.http.QueryStringDecoder;
 
-public class HttpServerHandler extends SimpleChannelInboundHandler<Object> {
-    private HttpRequest request;
-    StringBuilder responseData = new StringBuilder();
+import java.util.*;
+import nthu.wcislab.upnpigd.requesthandler.*;
 
+import static io.netty.util.CharsetUtil.UTF_8;
+import static io.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
+
+/* This Handler class is independent to each http request */
+public class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+
+    private final HttpServer server;
+
+    public HttpServerHandler(HttpServer server) {
+        this.server = server;
+    }
+
+    /* This function is invoked twice continuously */
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) {
         ctx.flush();
     }
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
-        if (msg instanceof HttpRequest) {
-            this.request = (HttpRequest) msg;
-            HttpRequest request = this.request;
+    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
+        FullHttpResponse response;
+        String uri = request.uri();
+        QueryStringDecoder queryStringDecoder = new QueryStringDecoder(uri, UTF_8);
 
-            if (HttpUtil.is100ContinueExpected(request)) {
-                writeResponse(ctx);
+        try {
+            HttpRequestHandler handler = server.routes.Match(queryStringDecoder.path());
+            response = handler.handle(request);
+
+            if (response == null) {
+                throw new NullPointerException("Returned response is null");
             }
-            responseData.setLength(0);
-            responseData.append(RequestUtils.formatParams(request));
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            response = new DefaultFullHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR,
+                                    Unpooled.wrappedBuffer(e.toString().getBytes(UTF_8)));
         }
 
-        responseData.append(RequestUtils.evaluateDecoderResult(request));
-
-        if (msg instanceof HttpContent) {
-            HttpContent httpContent = (HttpContent) msg;
-            responseData.append(RequestUtils.formatBody(httpContent));
-            responseData.append(RequestUtils.evaluateDecoderResult(request));
-
-            if (msg instanceof LastHttpContent) {
-                LastHttpContent trailer = (LastHttpContent) msg;
-                responseData.append(RequestUtils.prepareLastResponse(request, trailer));
-                writeResponse(ctx, trailer, responseData);
-            }
+        boolean keepAlive = HttpUtil.isKeepAlive(request);
+        if (!keepAlive) {
+            ctx.write(response).addListener(ChannelFutureListener.CLOSE);
+        } else {
+            // Content-length is required to set to make sure the response data is fully replied.
+            response.headers()
+                .setInt(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes());
+            response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            ctx.write(response);
         }
     }
 
@@ -62,35 +80,5 @@ public class HttpServerHandler extends SimpleChannelInboundHandler<Object> {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         cause.printStackTrace();
         ctx.close();
-    }
-
-    private void writeResponse(ChannelHandlerContext ctx) {
-        FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, CONTINUE, Unpooled.EMPTY_BUFFER);
-        ctx.write(response);
-    }
-
-    private void writeResponse(ChannelHandlerContext ctx, LastHttpContent trailer, StringBuilder responseData) {
-        boolean keepAlive = HttpUtil.isKeepAlive(request);
-
-        FullHttpResponse httpResponse = new DefaultFullHttpResponse(HTTP_1_1,
-            ((HttpObject) trailer).decoderResult().isSuccess() ? OK : BAD_REQUEST,
-            Unpooled.copiedBuffer(responseData.toString(), CharsetUtil.UTF_8));
-
-        httpResponse.headers()
-            .set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=UTF-8");
-
-        if (keepAlive) {
-            httpResponse.headers()
-                .setInt(HttpHeaderNames.CONTENT_LENGTH, httpResponse.content().readableBytes());
-            httpResponse.headers()
-                .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-        }
-
-        ctx.write(httpResponse);
-
-        if (!keepAlive) {
-            ctx.writeAndFlush(Unpooled.EMPTY_BUFFER)
-                .addListener(ChannelFutureListener.CLOSE);
-        }
     }
 }

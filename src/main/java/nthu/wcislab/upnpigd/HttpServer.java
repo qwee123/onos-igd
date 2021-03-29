@@ -11,26 +11,45 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.http.HttpObjectAggregator;
+import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpRequestDecoder;
 import io.netty.handler.codec.http.HttpResponseEncoder;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 
+import java.util.*;
+import nthu.wcislab.upnpigd.requesthandler.*;
+
 public class HttpServer {
     private int port;
-    static Logger logger = LoggerFactory.getLogger(HttpServer.class);
+    private static final Logger log = LoggerFactory.getLogger(HttpServer.class);
+
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
-    private final Logger log = LoggerFactory.getLogger(getClass());
+    protected RouteMatcher routes;
 
     public HttpServer(int port) {
         this.port = port;
     }
 
-    public void run() throws Exception {
+    private void initRoutes(OnosAgent onos_agent) {
+        routes = new RouteMatcher();
+
+        routes.add("/checkalive", new CheckAliveHandler(onos_agent));
+        routes.add("/stats/iface", new StatsHandler.InterfaceHandler(onos_agent));
+        routes.add("/stats/extipaddr", new StatsHandler.ExtIpAddrHandler(onos_agent));
+        routes.add("/stats/wanconnstatus", new StatsHandler.WanConnStatus(onos_agent));
+        routes.noMatch = new ErrorHandler.NoMatchHandler();
+
+    }
+
+    public void run(OnosAgent onos_agent) throws Exception {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
+
+        initRoutes(onos_agent);
 
         ServerBootstrap b = new ServerBootstrap();
         b.group(bossGroup, workerGroup)
@@ -40,18 +59,74 @@ public class HttpServer {
                 @Override
                 protected void initChannel(SocketChannel ch) throws Exception {
                     ChannelPipeline p = ch.pipeline();
-                    p.addLast(new HttpRequestDecoder());
+                    p.addLast(new HttpRequestDecoder()); //chunked_supported is enabled in default
                     p.addLast(new HttpResponseEncoder());
-                    p.addLast(new HttpServerHandler());
+                    p.addLast(new HttpObjectAggregator(128 * 1024)); //bytes
+                    p.addLast(new HttpServerHandler(HttpServer.this));
                 }
             });
 
-        ChannelFuture f = b.bind(port).sync();
+        b.bind(port).sync();
         log.info("Server listening on port: {}", port);
     }
 
     public void stop() {
         bossGroup.shutdownGracefully();
         workerGroup.shutdownGracefully();
+    }
+
+    protected static class RouteMatcher {
+        private HashMap<String, HttpRequestHandler> routes = new HashMap();
+        private HttpRequestHandler noMatch;
+
+        public HttpRequestHandler Match(String reqpath) {
+            String path = cleanPath(reqpath);
+            int lastIndex = path.length() - 1;
+            if (lastIndex > 0 && path.charAt(lastIndex) == '/') {
+                path = path.substring(0, lastIndex);
+            }
+
+            final HttpRequestHandler handler = routes.get(path);
+            if (handler != null) {
+                return handler;
+            } else {
+                return noMatch;
+            }
+        }
+
+        /*
+        * This method will eliminate redundant '\' letter in the path.
+        * e.g. "a/b//c" >> "a/b/c"
+        */
+        private String cleanPath(String path) {
+            StringBuilder builder = new StringBuilder();
+            boolean edge = false;
+            int length = path.length();
+            for (int i = 0; i < length; i++) {
+                char c = path.charAt(i);
+                if (c == '/') {
+                    if (!edge) {
+                        builder.append(c);
+                    }
+                    edge = true;
+                } else {
+                    builder.append(c);
+                    edge = false;
+                }
+            }
+            return builder.toString();
+        }
+
+        public void add(String path, HttpRequestHandler handler) {
+            if (path.length() > 1 && path.endsWith("/")) { //eliminate '/' letter at the end
+                    path = path.substring(0, path.length() - 1);
+                }
+                routes.put(path, handler);
+        }
+
+        public void noMatch(HttpRequestHandler handler) {
+            noMatch = handler;
+        }
+
     }
 }
