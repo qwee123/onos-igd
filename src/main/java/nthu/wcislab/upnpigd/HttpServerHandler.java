@@ -1,29 +1,19 @@
 package nthu.wcislab.upnpigd;
 
-import static io.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
-import static io.netty.handler.codec.http.HttpResponseStatus.CONTINUE;
-import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
-import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpUtil;
-import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.QueryStringDecoder;
 
-import java.util.*;
 import nthu.wcislab.upnpigd.requesthandler.*;
 
 import static io.netty.util.CharsetUtil.UTF_8;
@@ -51,7 +41,7 @@ public class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpReque
         QueryStringDecoder queryStringDecoder = new QueryStringDecoder(uri, UTF_8);
 
         try {
-            HttpRequestHandler handler = server.routes.Match(queryStringDecoder.path());
+            HttpRequestHandleable handler = server.routes.Match(queryStringDecoder.path());
             response = handler.handle(request);
 
             if (response == null) {

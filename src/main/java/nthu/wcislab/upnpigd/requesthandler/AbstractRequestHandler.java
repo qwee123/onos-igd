@@ -10,7 +10,7 @@ import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 import static io.netty.util.CharsetUtil.UTF_8;
 
-public abstract class AbstractRequestHandler implements HttpRequestHandler {
+public abstract class AbstractRequestHandler implements HttpRequestHandleable {
 
     public abstract FullHttpResponse handle(FullHttpRequest request);
 

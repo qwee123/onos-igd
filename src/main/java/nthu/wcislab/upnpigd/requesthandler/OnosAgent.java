@@ -4,4 +4,6 @@ import nthu.wcislab.upnpigd.requesthandler.StatsHandler.InterfaceHandler.Interfa
 
 public interface OnosAgent {
     InterfaceStats GetIGDExtIfaceStats();
+    String GetIGDExtAddr();
+    String GetIGDDeviceID();
 }

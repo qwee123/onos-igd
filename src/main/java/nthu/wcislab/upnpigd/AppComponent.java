@@ -184,6 +184,14 @@ public class AppComponent implements OnosAgent {
         return ret;
     }
 
+    public String GetIGDExtAddr() {
+        return igd_ext_ipaddr;
+    }
+    
+    public String GetIGDDeviceID() {
+        return router_device_id;
+    }
+    
     private class IGDPacketProcessor implements PacketProcessor {
 
         @Override

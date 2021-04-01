@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
@@ -12,15 +11,14 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpRequestDecoder;
 import io.netty.handler.codec.http.HttpResponseEncoder;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 
-import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import nthu.wcislab.upnpigd.requesthandler.*;
+import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor;
 
 public class HttpServer {
     private int port;
@@ -29,6 +27,7 @@ public class HttpServer {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     protected RouteMatcher routes;
+    private PortmappingTable portmappingTable;
 
     public HttpServer(int port) {
         this.port = port;
@@ -41,6 +40,8 @@ public class HttpServer {
         routes.add("/stats/iface", new StatsHandler.InterfaceHandler(onos_agent));
         routes.add("/stats/extipaddr", new StatsHandler.ExtIpAddrHandler(onos_agent));
         routes.add("/stats/wanconnstatus", new StatsHandler.WanConnStatus(onos_agent));
+        routes.add("/portmapping",
+                new PortmappingHandler.PortmappingSingleHandler(onos_agent, this.portmappingTable));
         routes.noMatch = new ErrorHandler.NoMatchHandler();
 
     }
@@ -48,6 +49,7 @@ public class HttpServer {
     public void run(OnosAgent onos_agent) throws Exception {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
+        portmappingTable = new PortmappingTable();
 
         initRoutes(onos_agent);
 
@@ -76,17 +78,17 @@ public class HttpServer {
     }
 
     protected static class RouteMatcher {
-        private HashMap<String, HttpRequestHandler> routes = new HashMap();
-        private HttpRequestHandler noMatch;
+        private ConcurrentHashMap<String, HttpRequestHandleable> routes = new ConcurrentHashMap<>();
+        private HttpRequestHandleable noMatch;
 
-        public HttpRequestHandler Match(String reqpath) {
+        public HttpRequestHandleable Match(String reqpath) {
             String path = cleanPath(reqpath);
             int lastIndex = path.length() - 1;
             if (lastIndex > 0 && path.charAt(lastIndex) == '/') {
                 path = path.substring(0, lastIndex);
             }
 
-            final HttpRequestHandler handler = routes.get(path);
+            final HttpRequestHandleable handler = routes.get(path);
             if (handler != null) {
                 return handler;
             } else {
@@ -117,14 +119,14 @@ public class HttpServer {
             return builder.toString();
         }
 
-        public void add(String path, HttpRequestHandler handler) {
+        public void add(String path, HttpRequestHandleable handler) {
             if (path.length() > 1 && path.endsWith("/")) { //eliminate '/' letter at the end
                     path = path.substring(0, path.length() - 1);
                 }
                 routes.put(path, handler);
         }
 
-        public void noMatch(HttpRequestHandler handler) {
+        public void noMatch(HttpRequestHandleable handler) {
             noMatch = handler;
         }
 
