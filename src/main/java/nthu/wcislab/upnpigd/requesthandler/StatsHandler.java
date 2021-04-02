@@ -22,10 +22,10 @@ public final class StatsHandler {
 
     private StatsHandler(){}
 
-    public static final class InterfaceHandler extends OnosExecutor {
+    public static final class InterfaceHandler extends IfaceWatcher {
 
-        public InterfaceHandler(OnosAgent agent) {
-            super(agent);
+        public InterfaceHandler(IfaceWatchable iface_watcher) {
+            super(iface_watcher);
         }
 
         // No input in default
@@ -36,7 +36,7 @@ public final class StatsHandler {
             /*JSONObject jobj = new JSONObject(request.content().toString(UTF_8));
             System.out.println(jobj);*/
 
-            InterfaceStats stats = onos_agent.GetIGDExtIfaceStats();
+            InterfaceStats stats = iface_watcher.GetIGDExtIfaceStats();
 
             JSONObject res_jobj = new JSONObject();
 
@@ -47,7 +47,7 @@ public final class StatsHandler {
             res_jobj.put(JSON_TAG_TOTAL_PKT_SENT, stats.opackets);
             res_jobj.put(JSON_TAG_TOTAL_PKT_RECV, stats.ipackets);
 
-            return buildResponse(res_jobj.toString(), HttpResponseStatus.OK);
+            return buildResponse(res_jobj, HttpResponseStatus.OK);
         }
 
         public static class InterfaceStats {
@@ -60,37 +60,37 @@ public final class StatsHandler {
         }
     }
 
-    public static final class ExtIpAddrHandler extends OnosExecutor {
+    public static final class ExtIpAddrHandler extends IfaceWatcher {
 
-        public ExtIpAddrHandler(OnosAgent agent) {
-            super(agent);
+        public ExtIpAddrHandler(IfaceWatchable iface_watcher) {
+            super(iface_watcher);
         }
 
         @Override
         protected FullHttpResponse handleGet(FullHttpRequest request) {
 
             JSONObject res_jobj = new JSONObject();
-            res_jobj.put(JSON_TAG_EXT_IP, onos_agent.GetIGDExtAddr());
+            res_jobj.put(JSON_TAG_EXT_IP, iface_watcher.GetIGDExtAddr());
 
-            return buildResponse(res_jobj.toString(), HttpResponseStatus.OK);
+            return buildResponse(res_jobj, HttpResponseStatus.OK);
         }
     }
 
-    public static final class WanConnStatus extends OnosExecutor {
+    public static final class WanConnStatus extends IfaceWatcher {
 
-        public WanConnStatus(OnosAgent agent) {
-            super(agent);
+        public WanConnStatus(IfaceWatchable iface_watcher) {
+            super(iface_watcher);
         }
 
         @Override
         protected FullHttpResponse handleGet(FullHttpRequest request) {
 
-            InterfaceHandler.InterfaceStats stats = onos_agent.GetIGDExtIfaceStats();
+            InterfaceHandler.InterfaceStats stats = iface_watcher.GetIGDExtIfaceStats();
 
             JSONObject res_jobj = new JSONObject();
             res_jobj.put(JSON_TAG_WAN_CONN_STATUS, stats.iface_status ? "connected" : "disconnected");
 
-            return buildResponse(res_jobj.toString(), HttpResponseStatus.OK);
+            return buildResponse(res_jobj, HttpResponseStatus.OK);
         }
     }
 }

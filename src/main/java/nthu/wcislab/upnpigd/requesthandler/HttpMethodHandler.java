@@ -10,12 +10,16 @@ public class HttpMethodHandler extends AbstractRequestHandler {
 
     protected static final Logger log = LoggerFactory.getLogger(HttpMethodHandler.class);
 
+    protected static final ErrorHandler.NoMatchHandler
+            NOTFOUND = new ErrorHandler.NoMatchHandler();
     protected static final ErrorHandler.MethodNotAllowedHandler
             METHODNOTALLOWED = new ErrorHandler.MethodNotAllowedHandler();
     protected static final ErrorHandler.BadRequestHandler
             BADREQUEST = new ErrorHandler.BadRequestHandler();
     protected static final ErrorHandler.InternalServerErrorHandler
             INTERNALSERVERERROR = new ErrorHandler.InternalServerErrorHandler();
+    protected static final ErrorHandler.ConflictHandler
+            CONFLICT = new ErrorHandler.ConflictHandler();
 
     @Override
     public FullHttpResponse handle(FullHttpRequest request) {

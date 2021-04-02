@@ -24,6 +24,12 @@ public class ErrorHandler {
         }
     }
 
+    public static class ConflictHandler extends AbstractRequestHandler {
+        public FullHttpResponse handle(FullHttpRequest request) {
+            return buildResponse("409", HttpResponseStatus.CONFLICT);
+        }
+    }
+
     public static class InternalServerErrorHandler extends AbstractRequestHandler {
         public FullHttpResponse handle(FullHttpRequest request) {
             return buildResponse("500", HttpResponseStatus.INTERNAL_SERVER_ERROR);

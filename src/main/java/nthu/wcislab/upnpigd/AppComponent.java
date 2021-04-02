@@ -47,15 +47,19 @@ import org.onosproject.net.packet.PacketService;
 
 import java.util.List;
 import javax.validation.constraints.Null;
+import javax.xml.crypto.Data;
 
-import nthu.wcislab.upnpigd.requesthandler.OnosAgent;
+import nthu.wcislab.upnpigd.portmapping.DatapathExecutable;
+import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor;
+import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry;
+import nthu.wcislab.upnpigd.requesthandler.IfaceWatchable;
 import nthu.wcislab.upnpigd.requesthandler.StatsHandler.InterfaceHandler.InterfaceStats;
 /**
  * Skeletal ONOS application component.
  */
 @Component(immediate = true)
 
-public class AppComponent implements OnosAgent {
+public class AppComponent {
 
     @Reference(cardinality = ReferenceCardinality.MANDATORY)
     protected ComponentConfigService cfgService;
@@ -80,6 +84,11 @@ public class AppComponent implements OnosAgent {
 
     private HttpServer httpServer;
 
+    private PortmappingProcessor portmappingProcessor;
+    private OPFIfaceWatcher ifaceWatcher;
+
+    private PortmappingExecutor portmappingExecutor;
+
     /**
      * Device_id and ext_iface_name should be filled in by onos-cfg"
      * Belowings are just some temporarily setup, or default config?
@@ -99,6 +108,7 @@ public class AppComponent implements OnosAgent {
         try {
             init();
             requestIntercepts();
+
             startServer();
             log.info("Started " + appId.id());
         } catch (Exception e) {
@@ -145,12 +155,16 @@ public class AppComponent implements OnosAgent {
              "Please check your network topology and then restart the app", igd_ext_iface_name);
              throw new NullPointerException("No IGD external interface found.");
         }
+
+        portmappingProcessor = new PortmappingProcessor();
+        ifaceWatcher = new OPFIfaceWatcher();
+        portmappingExecutor = new PortmappingExecutor(portmappingProcessor);
     }
 
     private void startServer() {
         httpServer = new HttpServer(40000);
         try {
-            httpServer.run(AppComponent.this);
+            httpServer.run(ifaceWatcher, portmappingExecutor);
         } catch (Exception e) {
             log.info("got exception {}", e);
         }
@@ -160,38 +174,50 @@ public class AppComponent implements OnosAgent {
         httpServer.stop();
     }
 
-    public InterfaceStats GetIGDExtIfaceStats() {
-        DeviceId router_id = DeviceId.deviceId(router_device_id);
-        Port port = deviceService.getPort(router_id, igd_ext_port);
-        PortStatistics stats = deviceService.getStatisticsForPort(router_id, igd_ext_port);
+    private class PortmappingProcessor implements DatapathExecutable {
+        public boolean UpdateRuleForEntry(PortmappingEntry entry) {
+            return true;
+        }
 
-        InterfaceStats ret = new InterfaceStats();
-        ret.iface_status = port.isEnabled();
-        ret.obytes = stats.bytesSent();
-        ret.ibytes = stats.bytesReceived();
-        ret.opackets = stats.packetsSent();
-        ret.ipackets = stats.packetsReceived();
-
-        /*
-        Baud rate is not bit rate. Two values will be identical only if the interface
-        transmits siganls only through two symbol(0, 1), so each cycle(?) of modulation
-        only contains one bit.
-
-        Anyway, use bitrate instead for now.
-        */
-        ret.baudrate = port.portSpeed();
-
-        return ret;
+        public boolean AddRuleForEntry(PortmappingEntry entry) {
+            return true;
+        }
     }
 
-    public String GetIGDExtAddr() {
-        return igd_ext_ipaddr;
+    private class OPFIfaceWatcher implements IfaceWatchable {
+        public InterfaceStats GetIGDExtIfaceStats() {
+            DeviceId router_id = DeviceId.deviceId(router_device_id);
+            Port port = deviceService.getPort(router_id, igd_ext_port);
+            PortStatistics stats = deviceService.getStatisticsForPort(router_id, igd_ext_port);
+
+            InterfaceStats ret = new InterfaceStats();
+            ret.iface_status = port.isEnabled();
+            ret.obytes = stats.bytesSent();
+            ret.ibytes = stats.bytesReceived();
+            ret.opackets = stats.packetsSent();
+            ret.ipackets = stats.packetsReceived();
+
+            /*
+            Baud rate is not bit rate. Two values will be identical only if the interface
+            transmits siganls only through two symbol(0, 1), so each cycle(?) of modulation
+            only contains one bit.
+
+            Anyway, use bitrate instead for now.
+            */
+            ret.baudrate = port.portSpeed();
+
+            return ret;
+        }
+
+        public String GetIGDExtAddr() {
+            return igd_ext_ipaddr;
+        }
+
+        public String GetIGDDeviceID() {
+            return router_device_id;
+        }
     }
-    
-    public String GetIGDDeviceID() {
-        return router_device_id;
-    }
-    
+
     private class IGDPacketProcessor implements PacketProcessor {
 
         @Override

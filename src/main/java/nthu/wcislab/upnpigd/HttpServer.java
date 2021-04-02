@@ -27,31 +27,29 @@ public class HttpServer {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     protected RouteMatcher routes;
-    private PortmappingTable portmappingTable;
 
     public HttpServer(int port) {
         this.port = port;
     }
 
-    private void initRoutes(OnosAgent onos_agent) {
+    private void initRoutes(IfaceWatchable iface_watcher, PortmappingExecutor pm_executor) {
         routes = new RouteMatcher();
 
-        routes.add("/checkalive", new CheckAliveHandler(onos_agent));
-        routes.add("/stats/iface", new StatsHandler.InterfaceHandler(onos_agent));
-        routes.add("/stats/extipaddr", new StatsHandler.ExtIpAddrHandler(onos_agent));
-        routes.add("/stats/wanconnstatus", new StatsHandler.WanConnStatus(onos_agent));
-        routes.add("/portmapping",
-                new PortmappingHandler.PortmappingSingleHandler(onos_agent, this.portmappingTable));
+        routes.add("/checkalive", new CheckAliveHandler(iface_watcher));
+        routes.add("/stats/iface", new StatsHandler.InterfaceHandler(iface_watcher));
+        routes.add("/stats/extipaddr", new StatsHandler.ExtIpAddrHandler(iface_watcher));
+        routes.add("/stats/wanconnstatus", new StatsHandler.WanConnStatus(iface_watcher));
+        routes.add("/portmapping", new PortmappingSingleHandler(pm_executor));
+        routes.add("/portmapping/range", new PortmappingRangeHandler(pm_executor));
         routes.noMatch = new ErrorHandler.NoMatchHandler();
 
     }
 
-    public void run(OnosAgent onos_agent) throws Exception {
+    public void run(IfaceWatchable iface_watcher, PortmappingExecutor pm_executor) throws Exception {
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
-        portmappingTable = new PortmappingTable();
 
-        initRoutes(onos_agent);
+        initRoutes(iface_watcher, pm_executor);
 
         ServerBootstrap b = new ServerBootstrap();
         b.group(bossGroup, workerGroup)

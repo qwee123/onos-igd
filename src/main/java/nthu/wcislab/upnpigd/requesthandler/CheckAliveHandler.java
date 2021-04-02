@@ -5,10 +5,10 @@ import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 
 
-public class CheckAliveHandler extends OnosExecutor {
+public class CheckAliveHandler extends IfaceWatcher {
 
-    public CheckAliveHandler(OnosAgent agent) {
-        super(agent);
+    public CheckAliveHandler(IfaceWatchable iface_watcher) {
+        super(iface_watcher);
     }
 
     public FullHttpResponse handle(FullHttpRequest request) {
