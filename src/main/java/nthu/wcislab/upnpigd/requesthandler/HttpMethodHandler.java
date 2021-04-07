@@ -6,6 +6,8 @@ import org.slf4j.LoggerFactory;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 
+import static io.netty.util.CharsetUtil.UTF_8;
+
 public class HttpMethodHandler extends AbstractRequestHandler {
 
     protected static final Logger log = LoggerFactory.getLogger(HttpMethodHandler.class);
@@ -31,7 +33,7 @@ public class HttpMethodHandler extends AbstractRequestHandler {
             case "DELETE":
                 return handleDelete(request);
             default:
-                return METHODNOTALLOWED.handle(request);
+                return METHODNOTALLOWED.handle(null);
         }
     }
 

@@ -14,12 +14,6 @@ import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry.Rem
 
 public class PortmappingSingleHandler extends PortmappingHandler {
 
-    private static String json_tag_eport = "eport";
-    private static String json_tag_proto = "proto";
-    private static String json_tag_rhost = "rhost";
-    private static String json_tag_ihost = "iaddr";
-    private static String json_tag_iport = "iport";
-    private static String json_tag_duration = "duration";
     private static String json_tag_auto = "autoselect"; // To distinquish AddAny and normal Add method
     private static String json_tag_return_code = "return_code";
 
@@ -38,8 +32,9 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         String rhost;
 
         try {
+
             eport = jobj.getInt(json_tag_eport);
-            proto = jobj.getString(json_tag_proto).equals("TCP") ? Protocol.TCP : Protocol.UDP;
+            proto = jobj.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP;
             rhost = jobj.getString(json_tag_rhost);
         } catch (JSONException e) {
             log.error("Fail to parse received json object of Get method.");
@@ -65,13 +60,14 @@ public class PortmappingSingleHandler extends PortmappingHandler {
             return NOTFOUND.handle(null);
         }
 
-        JSONObject ret = new JSONObject();
-        ret.put(json_tag_eport, entry.GetExternalPort());
-        ret.put(json_tag_iport, entry.GetInternalPort());
-        ret.put(json_tag_rhost, rhostdetail.GetRhost());
-        ret.put(json_tag_proto, entry.GetProtocol().toString());
-        ret.put(json_tag_ihost, entry.GetInternalHost());
-        ret.put(json_tag_duration, rhostdetail.GetLeaseDuration());
+        JSONObject ret = BuildPortmappingToJson(
+                entry.GetExternalPort(),
+                entry.GetInternalPort(),
+                rhostdetail.GetRhost(),
+                entry.GetProtocol().toString(),
+                entry.GetInternalHost(),
+                rhostdetail.GetLeaseDuration()
+        );
 
         return buildResponse(ret, HttpResponseStatus.OK);
     }
@@ -86,7 +82,7 @@ public class PortmappingSingleHandler extends PortmappingHandler {
             entry = new PortmappingEntry(
                     jobj.getInt(json_tag_eport), jobj.getInt(json_tag_iport),
                     jobj.getString(json_tag_rhost), jobj.getString(json_tag_ihost),
-                    jobj.getString(json_tag_proto).equals("TCP") ? Protocol.TCP : Protocol.UDP,
+                    jobj.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP,
                     jobj.getInt(json_tag_duration));
             autoselect = jobj.getBoolean(json_tag_auto);
 
@@ -109,7 +105,32 @@ public class PortmappingSingleHandler extends PortmappingHandler {
 
     @Override
     protected FullHttpResponse handleDelete(FullHttpRequest request) {
-        return null;
+        JSONObject jobj = new JSONObject(request.content().toString(UTF_8));
+        int eport;
+        Protocol proto;
+        String rhost;
+
+        try {
+            eport = jobj.getInt(json_tag_eport);
+            proto = jobj.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP;
+            rhost = jobj.getString(json_tag_rhost);
+        } catch (JSONException e) {
+            log.error("Fail to parse received json object of Delete method.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        }
+
+        try {
+            if (!pm_executor.DeleteEntry(eport, proto, rhost)) {
+                return NOTFOUND.handle(null);
+            }
+        } catch (IllegalArgumentException e) {
+            log.error("remotehost is not a valid ip prefix.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        }
+
+        return buildResponse("", HttpResponseStatus.OK);
     }
 
     private FullHttpResponse handleNormalAddPortmapping(PortmappingEntry entry) {

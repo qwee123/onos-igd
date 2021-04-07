@@ -4,24 +4,29 @@ import org.json.JSONObject;
 import org.onlab.packet.IpAddress;
 import org.onlab.packet.IpPrefix;
 
+import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
+
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Iterator;
 
 public class PortmappingExecutor {
 
     private DatapathExecutable datapath;
-    private ConcurrentHashMap<portmappingIndex, PortmappingEntry> table;
+    private ConcurrentHashMap<tableIndex, PortmappingEntry> table;
     //init a common index instance, instead of creating/allocating instance everytime for quries and inserts.
-    private portmappingIndex indexer;
+    private tableIndex indexer;
 
     public PortmappingExecutor(DatapathExecutable datapath) {
         this.datapath = datapath;
         this.table = new ConcurrentHashMap<>();
-        this.indexer = new portmappingIndex();
+        this.indexer = new tableIndex();
     }
 
     /*
-     * 1. First, check if the table has already contained instance with identical portmappingIndex.
+     * 1. First, check if the table has already contained instance with identical tableIndex.
      *      1.a If no such instance is found, append new entry into the table.
      *      1.b Otherwise, continue to step2.
      *
@@ -92,6 +97,101 @@ public class PortmappingExecutor {
         return table.get(indexer);
     }
 
+    /**
+     * Delete entry with specified eport and protocol directly.
+     * @param eport external port number
+     * @param proto protocol
+     * @return true if such entry is found and deleted, false if no such entry
+     */
+    public boolean DeleteEntry(int eport, PortmappingEntry.Protocol proto) {
+        indexer.setIndex(eport, proto);
+        //remove return null if no specified entry is found
+        return !(null == table.remove(indexer));
+    }
+
+    /**
+     * Delete entry with specified eport, protocol and rhost.
+     * @param eport external port number
+     * @param proto protocol
+     * @param rhost remotehost, should be an IpPrefix in String.
+     * @return false if no such entry, true if entry is found and deleted successfully.
+     * @throws IllegalArgumentException if rhost is not a valid IPPrefix.
+     */
+    public boolean DeleteEntry(int eport, PortmappingEntry.Protocol proto, String rhost)
+                                                            throws IllegalArgumentException {
+        indexer.setIndex(eport, proto);
+        PortmappingEntry entry = table.get(indexer);
+        if (entry == null) {
+            return false;
+        }
+
+        if (!entry.DeleteRemoteHost(rhost)) {
+            return false;
+        }
+
+        if (entry.GetAllRemoteHostDetail().size() == 0) {
+            table.remove(indexer);
+        }
+        return true;
+    }
+
+    /**
+     * Return the corresponding list of portmappings, which satisfy the specified port range and protocol.
+     * @param start start port nubmer of the range
+     * @param end end port number of the range
+     * @param proto protocol to be filtered
+     * @return list of portmappings
+     * @throws IllegalArgumentException if start > end or start nubmer is not valid or end number is not valid.
+     */
+    public ArrayList<PortmappingEntry> GetEntryByPortRange(
+            int start,
+            int end,
+            PortmappingEntry.Protocol proto)
+            throws IllegalArgumentException {
+            return GetEntryByPortRange(start, end, proto, 0);
+    }
+
+    /**
+     * Return the corresponding list of portmappings, which satisfy the specified port range and protocol.
+     * If max number is met, no more entry will be added into the list even if the above conditions are satisfied.
+     * @param start start port nubmer of the range
+     * @param end end port number of the range
+     * @param proto protocol to be filtered
+     * @param max max entry number of the return list. 0 stands for no limitation.
+     * @return list of portmappings
+     * @throws IllegalArgumentException if start > end or start nubmer is not valid or end number is not valid.
+     */
+    public ArrayList<PortmappingEntry> GetEntryByPortRange(
+            int start,
+            int end,
+            PortmappingEntry.Protocol proto,
+            int max)
+            throws IllegalArgumentException {
+
+        if (start > end ||
+            !PortmappingEntry.isValidPortNubmer(start) ||
+            !PortmappingEntry.isValidPortNubmer(end)) {
+                throw new IllegalArgumentException("Bad start_port or end_port number.");
+        }
+
+        ArrayList<PortmappingEntry> ret = new ArrayList<PortmappingEntry>();
+
+        for (ConcurrentHashMap.Entry<tableIndex, PortmappingEntry> entry: table.entrySet()) {
+            PortmappingEntry pm_entry = entry.getValue();
+            int eport = pm_entry.eport;
+            if (eport < start  || eport > end || pm_entry.GetProtocol() != proto) {
+                continue;
+            }
+
+            ret.add(pm_entry);
+
+            if (max != 0 && ret.size() >= max) {
+                break;
+            }
+        }
+        return ret;
+    }
+
     private void appendIntoTable(PortmappingEntry entry) {
         indexer.setIndex(entry.eport, entry.proto);
         table.put(indexer, entry);
@@ -153,9 +253,10 @@ public class PortmappingExecutor {
          * Get remoteHostDetail with exactly specified rhost prefix.
          * @param rhost_str remotehost prefix in string, e.g. 172.17.0.0/24.
          * @return remoteHostDetail with specified rhost prefix, null if no such remoteHost.
+         * @throws IllegalArgumentException if rhost_str is not a valid IpPrefix.
          */
-        public RemoteHostDetail GetRemoteHostDetail(String rhost_str) {
-            IpPrefix rhost_ip = IpPrefix.valueOf(rhost_str);
+        public RemoteHostDetail GetRemoteHostDetail(String rhost_str) throws IllegalArgumentException {
+            IpPrefix rhost_ip = RemoteHostDetail.toIpPrefix(rhost_str);
             for (RemoteHostDetail old_rhost: this.rhost_list) {
                 if (old_rhost.HasSameRhost(rhost_ip)) {
                     return old_rhost;
@@ -164,20 +265,39 @@ public class PortmappingExecutor {
             return null;
         }
 
+        public List<RemoteHostDetail> GetAllRemoteHostDetail() {
+            return Collections.unmodifiableList(this.rhost_list);
+        }
+
+        /**
+         * Delete rhost with requested IPprefix rhost_str.
+         * @param rhost_str IPprefix.
+         * @return false if no such rhost.
+         * @throws IllegalArgumentException if rhost_str is not a valid IpPrefix.
+         */
+        public boolean DeleteRemoteHost(String rhost_str) throws IllegalArgumentException {
+            IpPrefix rhost_ip = RemoteHostDetail.toIpPrefix(rhost_str);
+            ArrayList<RemoteHostDetail> list = this.rhost_list;
+            int len = list.size();
+            for (int i = 0; i < len; i++) {
+                if (list.get(i).HasSameRhost(rhost_ip)) {
+                    list.remove(i);
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private static boolean isValidPortNubmer(int portnumber) {
             return portnumber > 0 && portnumber < MAXPORTNUMBER;
         }
 
-        public final class RemoteHostDetail {
+        public static final class RemoteHostDetail {
             private IpPrefix rhost;
             private int timestamp;
 
             private RemoteHostDetail(String rhost, int timestamp) throws IllegalArgumentException {
-                if (rhost.isEmpty()) {
-                    this.rhost = IpPrefix.valueOf("0.0.0.0/0");
-                } else {
-                    this.rhost = IpPrefix.valueOf(rhost);
-                }
+                this.rhost = toIpPrefix(rhost);
                 this.timestamp = timestamp;
             }
 
@@ -206,10 +326,18 @@ public class PortmappingExecutor {
             public boolean HasSameRhost(IpPrefix req) {
                 return this.rhost.equals(req);
             }
+
+            private static IpPrefix toIpPrefix(String ip_prefix) throws IllegalArgumentException {
+                if (ip_prefix.equals("*") || ip_prefix.isEmpty()) {
+                    return IpPrefix.valueOf("0.0.0.0/0");
+                } else {
+                    return IpPrefix.valueOf(ip_prefix);
+                }
+            }
         }
     }
 
-    private class portmappingIndex {
+    private class tableIndex {
         private int eport;
         private PortmappingEntry.Protocol proto;
 
@@ -220,10 +348,10 @@ public class PortmappingExecutor {
 
         @Override
         public boolean equals(Object o) {
-            if (o == null || !(o instanceof portmappingIndex)) {
+            if (o == null || !(o instanceof tableIndex)) {
                 return false;
             }
-            portmappingIndex index = (portmappingIndex) o;
+            tableIndex index = (tableIndex) o;
             return eport == index.eport && proto == index.proto;
         }
 
