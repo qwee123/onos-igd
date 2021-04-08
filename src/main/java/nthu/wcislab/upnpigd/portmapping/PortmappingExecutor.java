@@ -50,7 +50,7 @@ public class PortmappingExecutor {
         PortmappingEntry old = GetEntry(entry.eport, entry.proto);
         if (null == old) {
             if (!datapath.AddRuleForEntry(entry)) {
-                return -1; //action failed. TBD: Or should be conflictedWithOtherApp
+                return 0; //action failed. TBD: Or should be conflictedWithOtherApp
             }
             appendIntoTable(entry);
             return 1;
@@ -71,7 +71,7 @@ public class PortmappingExecutor {
         for (PortmappingEntry.RemoteHostDetail rhost_old: old.rhost_list) {
             if (rhost_old.HasSameRhost(rhost)) {
                 if (!datapath.UpdateRuleForEntry(entry)) {
-                    return -1;
+                    return 0;
                 }
                 old.UpdateRhost(index, rhost);
                 return 1;
@@ -80,7 +80,7 @@ public class PortmappingExecutor {
         }
 
         if (!datapath.AddRuleForEntry(entry)) {
-            return -1;
+            return 0;
         }
         old.AppendNewRhost(rhost);
         return 1;
@@ -192,6 +192,27 @@ public class PortmappingExecutor {
         return ret;
     }
 
+    /**
+     * Get PortmappingEntry-rhostdetail by index.
+     * @param index index.
+     * @return null if out of range. Otherwise, return corresponding entry.
+     */
+    public PortmappingEntry GetEntryByIndex(PortmappingNumericIndex index) {
+        int i = 0, prev_i = 0, tmp = index.index;
+        Iterator<PortmappingEntry> it = table.values().iterator();
+        while (it.hasNext()) {
+            PortmappingEntry ent = it.next();
+            i += ent.rhost_list.size();
+
+            if (i > tmp) {
+                index.sub_index = tmp - prev_i;
+                return ent;
+            }
+            prev_i = i;
+        }
+        return null;
+    }
+
     private void appendIntoTable(PortmappingEntry entry) {
         indexer.setIndex(entry.eport, entry.proto);
         table.put(indexer, entry);
@@ -269,6 +290,14 @@ public class PortmappingExecutor {
             return Collections.unmodifiableList(this.rhost_list);
         }
 
+        public RemoteHostDetail GetRemoteHostDetailByIndex(PortmappingNumericIndex index) {
+            try {
+                return this.rhost_list.get(index.sub_index);
+            } catch (IndexOutOfBoundsException e) {
+                return null;
+            }
+        }
+
         /**
          * Delete rhost with requested IPprefix rhost_str.
          * @param rhost_str IPprefix.
@@ -288,8 +317,8 @@ public class PortmappingExecutor {
             return false;
         }
 
-        private static boolean isValidPortNubmer(int portnumber) {
-            return portnumber > 0 && portnumber < MAXPORTNUMBER;
+        public static boolean isValidPortNubmer(int portnumber) {
+            return portnumber > 0 && portnumber <= MAXPORTNUMBER;
         }
 
         public static final class RemoteHostDetail {
@@ -334,6 +363,17 @@ public class PortmappingExecutor {
                     return IpPrefix.valueOf(ip_prefix);
                 }
             }
+        }
+    }
+
+    public class PortmappingNumericIndex {
+
+        private int index;
+        private int sub_index;
+
+        public PortmappingNumericIndex(int index) {
+            this.index = index;
+            this.sub_index = 0;
         }
     }
 

@@ -16,6 +16,9 @@ public class PortmappingSingleHandler extends PortmappingHandler {
 
     private static String json_tag_auto = "autoselect"; // To distinquish AddAny and normal Add method
     private static String json_tag_return_code = "return_code";
+    private static String json_tag_permit_port_range = "permit_port_range";
+    private static String json_tag_permit_port_range_max = "max";
+    private static String json_tag_permit_port_range_min = "min";
 
     private static int success_ret_code = 0;
     private static int conflicted_with_other_app_ret_code = -2;
@@ -32,7 +35,6 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         String rhost;
 
         try {
-
             eport = jobj.getInt(json_tag_eport);
             proto = jobj.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP;
             rhost = jobj.getString(json_tag_rhost);
@@ -75,31 +77,20 @@ public class PortmappingSingleHandler extends PortmappingHandler {
     @Override
     protected FullHttpResponse handlePost(FullHttpRequest request) {
         JSONObject jobj = new JSONObject(request.content().toString(UTF_8));
-        PortmappingEntry entry;
         boolean autoselect = false;
 
         try {
-            entry = new PortmappingEntry(
-                    jobj.getInt(json_tag_eport), jobj.getInt(json_tag_iport),
-                    jobj.getString(json_tag_rhost), jobj.getString(json_tag_ihost),
-                    jobj.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP,
-                    jobj.getInt(json_tag_duration));
             autoselect = jobj.getBoolean(json_tag_auto);
-
         } catch (JSONException e) {
             log.error("Fail to parse received json object of Post method.");
-            log.error("{}", e.getMessage());
-            return BADREQUEST.handle(null);
-        } catch (IllegalArgumentException e) {
-            log.error("Fail to build PortmappingEntry.");
             log.error("{}", e.getMessage());
             return BADREQUEST.handle(null);
         }
 
         if (autoselect) {
-            return handleAddAnyPortmapping(entry);
+            return handleAddAnyPortmapping(jobj);
         } else {
-            return handleNormalAddPortmapping(entry);
+            return handleNormalAddPortmapping(jobj);
         }
     }
 
@@ -133,6 +124,27 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         return buildResponse("", HttpResponseStatus.OK);
     }
 
+    private FullHttpResponse handleNormalAddPortmapping(JSONObject request) {
+        PortmappingEntry entry;
+        try {
+            entry = new PortmappingEntry(
+                    request.getInt(json_tag_eport), request.getInt(json_tag_iport),
+                    request.getString(json_tag_rhost), request.getString(json_tag_ihost),
+                    request.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP,
+                    request.getInt(json_tag_duration));
+        } catch (JSONException e) {
+            log.error("Fail to parse received json object of Post method.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        } catch (IllegalArgumentException e) {
+            log.error("Fail to build PortmappingEntry.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        }
+
+        return handleNormalAddPortmapping(entry);
+    }
+
     private FullHttpResponse handleNormalAddPortmapping(PortmappingEntry entry) {
         int r;
         try {
@@ -156,12 +168,84 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         }
     }
 
-    private FullHttpResponse handleAddAnyPortmapping(PortmappingEntry entry) {
+    private FullHttpResponse handleAddAnyPortmapping(JSONObject request) {
+        int eport, max_port_num, min_port_num;
+        Protocol proto;
+        try {
+            eport = request.getInt(json_tag_eport);
+            proto = request.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP;
+            JSONObject permit_range  = request.getJSONObject(json_tag_permit_port_range);
+            max_port_num = permit_range.getInt(json_tag_permit_port_range_max);
+            min_port_num = permit_range.getInt(json_tag_permit_port_range_min);
+        } catch (JSONException e) {
+            log.error("Fail to parse received json object of Post method.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        }
 
-        /* find available port */
+        if (max_port_num < min_port_num
+            || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(max_port_num)
+            || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(min_port_num)) {
+            log.error("Invalid port range. Must between 0-65535.");
+            return BADREQUEST.handle(null);
+        }
 
-        JSONObject ret_jobj = new JSONObject();
+        eport = findAvailablePort(eport, proto, max_port_num, min_port_num);
+        if (eport == -1) {
+            return CONFLICT.handle(null);
+        }
 
-        return buildResponse(ret_jobj, HttpResponseStatus.OK);
+        PortmappingEntry entry;
+        try {
+            entry = new PortmappingEntry(
+                    eport, request.getInt(json_tag_iport),
+                    request.getString(json_tag_rhost), request.getString(json_tag_ihost),
+                    proto, request.getInt(json_tag_duration));
+        } catch (JSONException e) {
+            log.error("Fail to parse received json object of Post method.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        } catch (IllegalArgumentException e) {
+            log.error("Fail to build PortmappingEntry.");
+            log.error("{}", e.getMessage());
+            return BADREQUEST.handle(null);
+        }
+
+        return handleNormalAddPortmapping(entry);
+    }
+
+    private int findAvailablePort(int eport, Protocol proto, int max, int min) {
+        int offset = 1;
+        boolean sign = false;
+        while (null != pm_executor.GetEntry(eport, proto)) {
+            eport += (sign ? offset : -1 * offset);
+            sign = !sign;
+            offset++;
+
+            if (eport > max || eport < min) {
+                break;
+            }
+        }
+
+        if (eport > max) {
+            eport += (sign ? offset : -1 * offset);
+            while (eport >= min && null != pm_executor.GetEntry(eport, proto)) {
+                eport--;
+            }
+
+            if (eport < min) {
+                return -1;
+            }
+        } else if (eport < min) {
+            eport += (sign ? offset : -1 * offset);
+            while (eport <= max && null != pm_executor.GetEntry(eport, proto)) {
+                eport++;
+            }
+
+            if (eport > max) {
+                return -1;
+            }
+        }
+        return eport;
     }
 }

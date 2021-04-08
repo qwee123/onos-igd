@@ -41,6 +41,7 @@ public class HttpServer {
         routes.add("/stats/wanconnstatus", new StatsHandler.WanConnStatus(iface_watcher));
         routes.add("/portmapping", new PortmappingSingleHandler(pm_executor));
         routes.add("/portmapping/range", new PortmappingRangeHandler(pm_executor));
+        routes.add("/portmapping/index", new PortmappingIndexHandler(pm_executor));
         routes.noMatch = new ErrorHandler.NoMatchHandler();
 
     }
