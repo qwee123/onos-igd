@@ -47,9 +47,16 @@ public class PortmappingExecutor {
      */
     public int AddEntry(PortmappingEntry entry) throws IllegalArgumentException {
 
+        if (entry.rhost_list.size() != 1 || null == entry.rhost_list.get(0)) {
+            throw new IllegalArgumentException("In current version," +
+                " rhost argument of AddEntry method should have only one element, and element should not be null");
+        }
+
+        PortmappingEntry.RemoteHostDetail rhost = entry.rhost_list.get(0);
+
         PortmappingEntry old = GetEntry(entry.eport, entry.proto);
         if (null == old) {
-            if (!datapath.AddRuleForEntry(entry)) {
+            if (!datapath.AddRuleForEntry(entry, rhost)) {
                 return 0; //action failed. TBD: Or should be conflictedWithOtherApp
             }
             appendIntoTable(entry);
@@ -60,17 +67,10 @@ public class PortmappingExecutor {
             return -1; //existed.
         }
 
-
-        if (entry.rhost_list.size() != 1 || null == entry.rhost_list.get(0)) {
-            throw new IllegalArgumentException("In current version," +
-                " rhost argument of AddEntry method should have only one element, and element should not be null");
-        }
-        PortmappingEntry.RemoteHostDetail rhost = entry.rhost_list.get(0);
-
         int index = 0;
         for (PortmappingEntry.RemoteHostDetail rhost_old: old.rhost_list) {
             if (rhost_old.HasSameRhost(rhost)) {
-                if (!datapath.UpdateRuleForEntry(entry)) {
+                if (!datapath.UpdateRuleForEntry(entry, rhost)) {
                     return 0;
                 }
                 old.UpdateRhost(index, rhost);
@@ -79,7 +79,7 @@ public class PortmappingExecutor {
             index++;
         }
 
-        if (!datapath.AddRuleForEntry(entry)) {
+        if (!datapath.AddRuleForEntry(entry, rhost)) {
             return 0;
         }
         old.AppendNewRhost(rhost);
@@ -101,38 +101,57 @@ public class PortmappingExecutor {
      * Delete entry with specified eport and protocol directly.
      * @param eport external port number
      * @param proto protocol
-     * @return true if such entry is found and deleted, false if no such entry
+     * @return 1 if action succeeds, 0 if action failed, -1 if no such entry.
      */
-    public boolean DeleteEntry(int eport, PortmappingEntry.Protocol proto) {
+    public int DeleteEntry(int eport, PortmappingEntry.Protocol proto) {
         indexer.setIndex(eport, proto);
         //remove return null if no specified entry is found
-        return !(null == table.remove(indexer));
+        PortmappingEntry entry = table.get(indexer);
+        if (entry == null) {
+            return -1;
+        }
+
+        List<PortmappingEntry.RemoteHostDetail> rhosts = entry.GetAllRemoteHostDetail();
+        for (PortmappingEntry.RemoteHostDetail  rhost : rhosts) {
+            if (!datapath.DeleteRuleForEntry(entry, rhost)) {
+                return 0;
+            }
+            table.remove(indexer);
+        }
+
+        return 1;
     }
 
     /**
      * Delete entry with specified eport, protocol and rhost.
      * @param eport external port number
      * @param proto protocol
-     * @param rhost remotehost, should be an IpPrefix in String.
-     * @return false if no such entry, true if entry is found and deleted successfully.
+     * @param rhost_str remotehost, should be an IpPrefix in String.
+     * @return 1 if action succeeds, 0 if action failed, -1 if no such entry.
      * @throws IllegalArgumentException if rhost is not a valid IPPrefix.
      */
-    public boolean DeleteEntry(int eport, PortmappingEntry.Protocol proto, String rhost)
+    public int DeleteEntry(int eport, PortmappingEntry.Protocol proto, String rhost_str)
                                                             throws IllegalArgumentException {
         indexer.setIndex(eport, proto);
         PortmappingEntry entry = table.get(indexer);
         if (entry == null) {
-            return false;
+            return -1;
         }
 
-        if (!entry.DeleteRemoteHost(rhost)) {
-            return false;
+        PortmappingEntry.RemoteHostDetail rhost = entry.GetRemoteHostDetail(rhost_str);
+        if (rhost == null) {
+            return -1;
         }
+
+        if (!datapath.DeleteRuleForEntry(entry, rhost)) {
+            return 0;
+        }
+        entry.DeleteRemoteHost(rhost_str);
 
         if (entry.GetAllRemoteHostDetail().size() == 0) {
             table.remove(indexer);
         }
-        return true;
+        return 1;
     }
 
     /**
@@ -270,6 +289,10 @@ public class PortmappingExecutor {
             return this.ihost.toString();
         }
 
+        public IpAddress GetInternalHostByIpAddress() {
+            return this.ihost;
+        }
+
         /**
          * Get remoteHostDetail with exactly specified rhost prefix.
          * @param rhost_str remotehost prefix in string, e.g. 172.17.0.0/24.
@@ -332,6 +355,10 @@ public class PortmappingExecutor {
 
             public String GetRhost() {
                 return rhost.toString();
+            }
+
+            public IpPrefix GetRhostByIpPrefix() {
+                return rhost;
             }
 
             public int GetLeaseDuration() {

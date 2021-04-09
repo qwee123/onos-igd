@@ -112,8 +112,13 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         }
 
         try {
-            if (!pm_executor.DeleteEntry(eport, proto, rhost)) {
-                return NOTFOUND.handle(null);
+            switch (pm_executor.DeleteEntry(eport, proto, rhost)) {
+                case 1:
+                    break;
+                case -1:
+                    return NOTFOUND.handle(null);
+                default:
+                    return INTERNALSERVERERROR.handle(null);
             }
         } catch (IllegalArgumentException e) {
             log.error("remotehost is not a valid ip prefix.");

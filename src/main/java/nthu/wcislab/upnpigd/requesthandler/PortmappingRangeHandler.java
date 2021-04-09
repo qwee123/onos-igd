@@ -101,11 +101,16 @@ public class PortmappingRangeHandler extends PortmappingHandler {
         JSONArray ret_list = new JSONArray();
         for (PortmappingEntry entry: pm_list) {
             int eport = entry.GetExternalPort();
-            if (pm_executor.DeleteEntry(eport, entry.GetProtocol())) {
-                ret_list.put(eport);
-            } else {
-                log.warn("Fail to delete entry retrieved from get method."
-                    + " eport: {}|proto: {}", eport, proto.toString());
+            switch (pm_executor.DeleteEntry(eport, entry.GetProtocol())) {
+                case 1:
+                    ret_list.put(eport);
+                    break;
+                case -1:
+                    log.warn("Fail to delete entry retrieved from get method."
+                        + " eport: {}|proto: {}", eport, proto.toString());
+                    break;
+                default:
+                    return INTERNALSERVERERROR.handle(null);
             }
         }
 

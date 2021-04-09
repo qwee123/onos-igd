@@ -25,8 +25,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.onlab.packet.Ethernet;
+import org.onlab.packet.IPv4;
 import org.onlab.packet.ARP;
 import org.onlab.packet.Ip4Address;
+import org.onlab.packet.IpPrefix;
+import org.onlab.packet.TpPort;
 import org.onosproject.core.CoreService;
 import org.onosproject.core.ApplicationId;
 import org.onosproject.net.ConnectPoint;
@@ -34,9 +37,13 @@ import org.onosproject.net.Device;
 import org.onosproject.net.DeviceId;
 import org.onosproject.net.device.DeviceService;
 import org.onosproject.net.device.PortStatistics;
+import org.onosproject.net.flow.DefaultFlowRule;
 import org.onosproject.net.flow.DefaultTrafficSelector;
+import org.onosproject.net.flow.DefaultTrafficTreatment;
+import org.onosproject.net.flow.FlowRule;
 import org.onosproject.net.flow.FlowRuleService;
 import org.onosproject.net.flow.TrafficSelector;
+import org.onosproject.net.flow.TrafficTreatment;
 import org.onosproject.net.Port;
 import org.onosproject.net.PortNumber;
 import org.onosproject.net.packet.InboundPacket;
@@ -52,6 +59,8 @@ import javax.xml.crypto.Data;
 import nthu.wcislab.upnpigd.portmapping.DatapathExecutable;
 import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor;
 import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry;
+import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry.Protocol;
+import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry.RemoteHostDetail;
 import nthu.wcislab.upnpigd.requesthandler.IfaceWatchable;
 import nthu.wcislab.upnpigd.requesthandler.StatsHandler.InterfaceHandler.InterfaceStats;
 /**
@@ -97,6 +106,8 @@ public class AppComponent {
     private final String igd_ext_iface_name = "wan1";
     private final String igd_ext_ipaddr = "192.168.1.10/24";
     private PortNumber igd_ext_port;
+    private int basepriority = 20;
+    private int infinitepriority = 9999; //For deleteRules
 
     @Activate
     protected void activate() {
@@ -175,12 +186,79 @@ public class AppComponent {
     }
 
     private class PortmappingProcessor implements DatapathExecutable {
-        public boolean UpdateRuleForEntry(PortmappingEntry entry) {
+        public boolean UpdateRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
+            AddRuleForEntry(entry, rhost);
             return true;
         }
 
-        public boolean AddRuleForEntry(PortmappingEntry entry) {
+        public boolean AddRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
+            TrafficSelector.Builder selector = buildMatchRule(entry, rhost);
+            TrafficTreatment.Builder treatment = buildAction(entry, rhost);
+
+            int priority = basepriority + rhost.GetRhostByIpPrefix().prefixLength();
+            FlowRule rule = DefaultFlowRule.builder()
+                .withSelector(selector.build())
+                .withTreatment(treatment.build())
+                .forDevice(DeviceId.deviceId(router_device_id))
+                .withPriority(priority)
+                .makeTemporary(rhost.GetLeaseDuration())
+                .fromApp(appId)
+                .build();
+            flowRuleService.applyFlowRules(rule);
+
             return true;
+        }
+
+        public boolean DeleteRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
+            TrafficSelector.Builder selector = buildMatchRule(entry, rhost);
+
+            int priority = basepriority + rhost.GetRhostByIpPrefix().prefixLength();
+            FlowRule rule = DefaultFlowRule.builder()
+                .withSelector(selector.build())
+                .forDevice(DeviceId.deviceId(router_device_id))
+                .makeTemporary(0)
+                .withPriority(priority)
+                .fromApp(appId)
+                .build();
+            flowRuleService.removeFlowRules(rule);
+
+            return true;
+        }
+
+        private TrafficSelector.Builder buildMatchRule(PortmappingEntry entry, RemoteHostDetail rhost) {
+            TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
+
+            selector.matchEthType(Ethernet.TYPE_IPV4);
+
+            if (entry.GetProtocol() == Protocol.TCP) {
+                selector.matchIPProtocol(IPv4.PROTOCOL_TCP);
+                selector.matchTcpDst(TpPort.tpPort(entry.GetExternalPort()));
+            } else {
+                selector.matchIPProtocol(IPv4.PROTOCOL_UDP);
+                selector.matchUdpDst(TpPort.tpPort(entry.GetExternalPort()));
+            }
+
+
+            IpPrefix rhost_prefix = rhost.GetRhostByIpPrefix();
+            if (!rhost_prefix.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
+                selector.matchIPSrc(rhost_prefix);
+            }
+
+            return selector;
+        }
+
+        private TrafficTreatment.Builder buildAction(PortmappingEntry entry, RemoteHostDetail rhost) {
+            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder();
+
+            if (entry.GetProtocol() == Protocol.TCP) {
+                treatment.setTcpDst(TpPort.tpPort(entry.GetInternalPort()));
+            } else {
+                treatment.setUdpDst(TpPort.tpPort(entry.GetInternalPort()));
+            }
+
+            treatment.setIpDst(entry.GetInternalHostByIpAddress());
+
+            return treatment;
         }
     }
 
