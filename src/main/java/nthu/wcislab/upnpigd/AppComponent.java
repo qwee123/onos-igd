@@ -37,13 +37,21 @@ import org.onosproject.net.Device;
 import org.onosproject.net.DeviceId;
 import org.onosproject.net.device.DeviceService;
 import org.onosproject.net.device.PortStatistics;
+import org.onosproject.net.flow.criteria.Criterion;
+import org.onosproject.net.flow.criteria.IPProtocolCriterion;
+import org.onosproject.net.flow.criteria.TcpPortCriterion;
 import org.onosproject.net.flow.DefaultFlowRule;
 import org.onosproject.net.flow.DefaultTrafficSelector;
 import org.onosproject.net.flow.DefaultTrafficTreatment;
+import org.onosproject.net.flow.FlowId;
 import org.onosproject.net.flow.FlowRule;
+import org.onosproject.net.flow.FlowRuleEvent;
 import org.onosproject.net.flow.FlowRuleService;
+import org.onosproject.net.flow.FlowRuleListener;
 import org.onosproject.net.flow.TrafficSelector;
 import org.onosproject.net.flow.TrafficTreatment;
+import org.onosproject.net.flow.FlowRule.FlowRemoveReason;
+import org.onosproject.net.flow.criteria.Criterion.Type;
 import org.onosproject.net.Port;
 import org.onosproject.net.PortNumber;
 import org.onosproject.net.packet.InboundPacket;
@@ -53,6 +61,8 @@ import org.onosproject.net.packet.PacketProcessor;
 import org.onosproject.net.packet.PacketService;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
 import javax.validation.constraints.Null;
 import javax.xml.crypto.Data;
 
@@ -95,8 +105,8 @@ public class AppComponent {
 
     private PortmappingProcessor portmappingProcessor;
     private OPFIfaceWatcher ifaceWatcher;
-
     private PortmappingExecutor portmappingExecutor;
+    private IGDFlowRuleListener flowRuleListener = new IGDFlowRuleListener();
 
     /**
      * Device_id and ext_iface_name should be filled in by onos-cfg"
@@ -107,7 +117,6 @@ public class AppComponent {
     private final String igd_ext_ipaddr = "192.168.1.10/24";
     private PortNumber igd_ext_port;
     private int basepriority = 20;
-    private int infinitepriority = 9999; //For deleteRules
 
     @Activate
     protected void activate() {
@@ -115,6 +124,7 @@ public class AppComponent {
         appId = coreService.registerApplication("nthu.wcislab.upnpigd");
 
         packetService.addProcessor(processor, PacketProcessor.director(2));
+        flowRuleService.addListener(flowRuleListener);
 
         try {
             init();
@@ -131,6 +141,7 @@ public class AppComponent {
     protected void deactivate() {
         withdrawIntercepts();
         flowRuleService.removeFlowRulesById(appId);
+        flowRuleService.removeListener(flowRuleListener);
         packetService.removeProcessor(processor);
         processor = null;
         stopServer();
@@ -217,6 +228,7 @@ public class AppComponent {
                 .withSelector(selector.build())
                 .forDevice(DeviceId.deviceId(router_device_id))
                 .makeTemporary(0)
+                .withReason(FlowRemoveReason.DELETE)
                 .withPriority(priority)
                 .fromApp(appId)
                 .build();
@@ -259,6 +271,110 @@ public class AppComponent {
             treatment.setIpDst(entry.GetInternalHostByIpAddress());
 
             return treatment;
+        }
+    }
+
+    private class IGDFlowRuleListener implements FlowRuleListener {
+        private final String TCP = String.valueOf((int) IPv4.PROTOCOL_TCP);
+        private final String UDP = String.valueOf((int) IPv4.PROTOCOL_UDP);
+
+        ConcurrentHashMap<FlowId, FlowRemoveReason> registry = new ConcurrentHashMap<>();
+
+        public void event(FlowRuleEvent event) {
+            if (event.subject().appId() != appId.id()) {
+                return;
+            }
+
+            FlowRule rule = event.subject();
+
+            switch (event.type()) {
+                case RULE_ADDED:
+                    log.info("Flow added: {}", rule.toString());
+                    return;
+                case RULE_REMOVED:
+                    FlowRemoveReason reason = registry.get(rule.id());
+                    switch (reason) {
+                        case NO_REASON: //triggered by onos timeout mechanism
+                            try {
+                                handleFlowRemoved(rule);
+                            } catch (IllegalArgumentException e) {
+                                log.error("Fail to remove flow {}", rule.toString());
+                            }
+                            break;
+                        case DELETE: //triggered by delete method.
+                            log.info("Flow removed: {}", rule.toString());
+                            break;
+                        default :
+                            log.warn("Unknown flow removed reason :{}", reason.toString());
+                            break;
+                    }
+
+                    registry.remove(rule.id());
+                    return;
+                case RULE_REMOVE_REQUESTED:
+                    registry.put(rule.id(), rule.reason());
+                    return;
+                default:
+                    return;
+            }
+        }
+
+        private void handleFlowRemoved(FlowRule rule) throws IllegalArgumentException {
+            Criterion proto_cri, eport_cri, rhost_cri;
+            String proto_str, rhost;
+            int eport;
+            Protocol proto;
+
+            proto_cri = rule.selector().getCriterion(Type.IP_PROTO);
+            if (proto_cri == null) {
+                log.error("Got unusaual deleted rule: {}. No IP_PROTO found.", rule.toString());
+                return;
+            }
+
+            proto_str = extractCriterionValue(proto_cri);
+            if (proto_str.equals(TCP)) {
+                eport_cri = rule.selector().getCriterion(Type.TCP_DST);
+                proto = Protocol.TCP;
+            } else if (proto_str.equals(UDP)) {
+                eport_cri = rule.selector().getCriterion(Type.UDP_DST);
+                proto = Protocol.UDP;
+            } else {
+                log.error("Got unusaual deleted rule: {}. IP_PROTO is neither TCP nor UDP.", rule.toString());
+                return;
+            }
+
+            if (eport_cri == null) {
+                log.error("Got unusaual deleted rule: {}. No EXT_PORT found.", rule.toString());
+                return;
+            }
+
+            eport = Integer.parseInt(extractCriterionValue(eport_cri));
+
+            rhost_cri = rule.selector().getCriterion(Type.IPV4_SRC);
+            if (rhost_cri == null) {
+                rhost = "0.0.0.0/0";
+            } else {
+                rhost = extractCriterionValue(rhost_cri);
+            }
+
+            portmappingExecutor.HandleDatapathTimeout(eport, proto, rhost);
+            log.info("Flow removed: {}", rule.toString());
+        }
+
+        /**
+         * Extract Criterion value.
+         * @param cri Criterion to be parsed.
+         * @return value in type string. Empty string will be returned if fail to extract the value.
+         */
+        private String extractCriterionValue(Criterion cri) throws IllegalArgumentException {
+            try {
+                return cri.toString().split(Criterion.SEPARATOR)[1];
+            } catch (IndexOutOfBoundsException e) {
+                log.error("Fail to extract Criterion value," +
+                    " or the criterion does not comply the format [tag]:[value]" +
+                    "Got Criterion : {}", cri.toString());
+                throw new IllegalArgumentException();
+            }
         }
     }
 

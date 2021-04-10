@@ -199,7 +199,7 @@
         <!-- <module name="LocalVariableName"/> -->
 
         <module name="MemberName">
-            <property name="format" value="^[a-z][_a-zA-Z0-9]*$"/>
+            <property name="format" value="^[a-z][_a-zA-Z0-9]*$|^[A-Z]*$"/>
         </module>
         <module name="MethodName">
             <property name="format" value="^[A-Za-z][a-zA-Z0-9]*$|^[a-z][_a-z0-9]*"/>

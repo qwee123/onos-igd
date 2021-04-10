@@ -155,6 +155,33 @@ public class PortmappingExecutor {
     }
 
     /**
+     * Handle OPflow flow rule timeout event. This function should only be triggered when timeout event occurs.
+     * @param eport external port number of the timeout rule.
+     * @param proto protocol of the timeout rule.
+     * @param rhost_str rhost address of the timeout rule.
+     * @throws IllegalArgumentException if rhost is not a valid IPPrefix.
+     */
+    public void HandleDatapathTimeout(int eport, PortmappingEntry.Protocol proto, String rhost_str)
+                                                                throws IllegalArgumentException {
+        indexer.setIndex(eport, proto);
+        PortmappingEntry entry = table.get(indexer);
+        if (entry == null) {
+            return;
+        }
+
+        PortmappingEntry.RemoteHostDetail rhost = entry.GetRemoteHostDetail(rhost_str);
+        if (rhost == null) {
+            return;
+        }
+
+        entry.DeleteRemoteHost(rhost_str);
+
+        if (entry.GetAllRemoteHostDetail().size() == 0) {
+            table.remove(indexer);
+        }
+    }
+
+    /**
      * Return the corresponding list of portmappings, which satisfy the specified port range and protocol.
      * @param start start port nubmer of the range
      * @param end end port number of the range
