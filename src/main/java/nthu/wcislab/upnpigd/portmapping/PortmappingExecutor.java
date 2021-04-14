@@ -349,6 +349,26 @@ public class PortmappingExecutor {
         }
 
         /**
+         * Get Rhost which cover the requested IpAddress and has the longest IpPrefix(highest priority).
+         * @param target IpAddress to be covered.
+         * @return Rhost covering the target.
+         */
+        public RemoteHostDetail GetLongestCoveringRhost(IpAddress target) {
+            int max_mask_length = -1;
+            RemoteHostDetail ret = null;
+            for (RemoteHostDetail old_rhost: this.rhost_list) {
+                if (old_rhost.ContainSpecificAddress(target)) {
+                    int len = old_rhost.GetRhostByIpPrefix().prefixLength();
+                    if (len > max_mask_length) {
+                        ret = old_rhost;
+                        max_mask_length = len;
+                    }
+                }
+            }
+            return ret;
+        }
+
+        /**
          * Delete rhost with requested IPprefix rhost_str.
          * @param rhost_str IPprefix.
          * @return false if no such rhost.
@@ -408,6 +428,10 @@ public class PortmappingExecutor {
              */
             public boolean HasSameRhost(IpPrefix req) {
                 return this.rhost.equals(req);
+            }
+
+            public boolean ContainSpecificAddress(IpAddress target) {
+                return this.rhost.contains(target);
             }
 
             private static IpPrefix toIpPrefix(String ip_prefix) throws IllegalArgumentException {

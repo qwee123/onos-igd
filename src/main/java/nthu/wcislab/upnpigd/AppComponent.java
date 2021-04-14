@@ -27,12 +27,21 @@ import org.slf4j.LoggerFactory;
 import org.onlab.packet.Ethernet;
 import org.onlab.packet.IPv4;
 import org.onlab.packet.ARP;
+import org.onlab.packet.BasePacket;
+import org.onlab.packet.ICMP;
+import org.onlab.packet.IpAddress;
 import org.onlab.packet.Ip4Address;
 import org.onlab.packet.IpPrefix;
+import org.onlab.packet.MacAddress;
+import org.onlab.packet.TCP;
 import org.onlab.packet.TpPort;
+import org.onlab.packet.UDP;
+import org.onlab.packet.VlanId;
 import org.onosproject.core.CoreService;
 import org.onosproject.core.ApplicationId;
 import org.onosproject.net.ConnectPoint;
+import org.onosproject.net.DefaultEdgeLink;
+import org.onosproject.net.DefaultLink;
 import org.onosproject.net.Device;
 import org.onosproject.net.DeviceId;
 import org.onosproject.net.device.DeviceService;
@@ -52,19 +61,26 @@ import org.onosproject.net.flow.TrafficSelector;
 import org.onosproject.net.flow.TrafficTreatment;
 import org.onosproject.net.flow.FlowRule.FlowRemoveReason;
 import org.onosproject.net.flow.criteria.Criterion.Type;
+import org.onosproject.net.host.HostService;
+import org.onosproject.net.Host;
+import org.onosproject.net.Path;
+import org.onosproject.net.topology.PathService;
 import org.onosproject.net.Port;
 import org.onosproject.net.PortNumber;
+import org.onosproject.net.packet.DefaultOutboundPacket;
 import org.onosproject.net.packet.InboundPacket;
 import org.onosproject.net.packet.PacketContext;
 import org.onosproject.net.packet.PacketPriority;
 import org.onosproject.net.packet.PacketProcessor;
 import org.onosproject.net.packet.PacketService;
+import org.onosproject.net.Link;
 
+import java.util.Random;
+import java.util.Set;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-
-import javax.validation.constraints.Null;
-import javax.xml.crypto.Data;
+import java.nio.ByteBuffer;
 
 import nthu.wcislab.upnpigd.portmapping.DatapathExecutable;
 import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor;
@@ -93,6 +109,12 @@ public class AppComponent {
     protected DeviceService deviceService;
 
     @Reference(cardinality = ReferenceCardinality.MANDATORY)
+    protected HostService hostService;
+
+    @Reference(cardinality = ReferenceCardinality.MANDATORY)
+    protected PathService pathService;
+
+    @Reference(cardinality = ReferenceCardinality.MANDATORY)
     protected CoreService coreService;
 
     private ApplicationId appId;
@@ -109,14 +131,21 @@ public class AppComponent {
     private IGDFlowRuleListener flowRuleListener = new IGDFlowRuleListener();
 
     /**
-     * Device_id and ext_iface_name should be filled in by onos-cfg"
-     * Belowings are just some temporarily setup, or default config?
+     * Device_id and ext_iface_name should be filled in by onos-cfg.
+     * publicAddress and privateAddress should also be filled by config.
+     * Belowings are just some temporarily setup, or default config.
      */
-    private final String router_device_id = "of:000012bf6e85b74f";
+    private final DeviceId igd_device_id = DeviceId.deviceId("of:000012bf6e85b74f");
     private final String igd_ext_iface_name = "wan1";
-    private final String igd_ext_ipaddr = "192.168.1.10/24";
+    private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
+    private final int idle_timeout = 20;
+    private final Ip4Address privateIPaddr = Ip4Address.valueOf("172.16.0.1");
+    private final MacAddress privateMac = MacAddress.valueOf(randomMACAddress());
+    private final MacAddress publicMac = MacAddress.valueOf(randomMACAddress());
+    private final int nat_intercept_priority = PacketPriority.HIGH1.priorityValue();
+    private final int nat_redirect_priority = PacketPriority.HIGH2.priorityValue();
+    private final int internal_forward_priority = PacketPriority.MEDIUM.priorityValue();
     private PortNumber igd_ext_port;
-    private int basepriority = 20;
 
     @Activate
     protected void activate() {
@@ -126,6 +155,8 @@ public class AppComponent {
         packetService.addProcessor(processor, PacketProcessor.director(2));
         flowRuleService.addListener(flowRuleListener);
 
+        log.info("External Mac: {}", publicMac.toString());
+        log.info("Internal Mac: {}", privateMac.toString());
         try {
             init();
             requestIntercepts();
@@ -150,19 +181,18 @@ public class AppComponent {
 
     private void requestIntercepts() {
         TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
-        selector.matchEthType(Ethernet.TYPE_IPV4);
+        selector.matchEthType(Ethernet.TYPE_ARP);
         packetService.requestPackets(selector.build(), PacketPriority.REACTIVE, appId);
     }
 
     private void withdrawIntercepts() {
         TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
-        selector.matchEthType(Ethernet.TYPE_IPV4);
+        selector.matchEthType(Ethernet.TYPE_ARP);
         packetService.cancelPackets(selector.build(), PacketPriority.REACTIVE, appId);
     }
 
     private void init() {
-        DeviceId router_id = DeviceId.deviceId(router_device_id);
-        List<Port> port_list = deviceService.getPorts(router_id);
+        List<Port> port_list = deviceService.getPorts(igd_device_id);
 
         for (Port port : port_list) {
             if (port.annotations().value("portName").equals(igd_ext_iface_name)) {
@@ -181,6 +211,63 @@ public class AppComponent {
         portmappingProcessor = new PortmappingProcessor();
         ifaceWatcher = new OPFIfaceWatcher();
         portmappingExecutor = new PortmappingExecutor(portmappingProcessor);
+
+        /*
+        Iterable<Device> devices = deviceService.getDevices();
+        for (Device device : devices) {
+            initRouteToGateWay(device);
+        }
+        */
+
+        // Drop all packet coming from WAN
+        TrafficSelector.Builder selector = DefaultTrafficSelector.builder()
+            .matchInPort(igd_ext_port);
+        TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+            .drop();
+        writeFlowRule(igd_device_id, selector, treatment, PacketPriority.HIGH.priorityValue(), 0, false);
+
+        //But permit arp request for the public interface
+        selector.matchEthType(Ethernet.TYPE_ARP)
+            .matchArpTpa(igd_ext_ipaddr);
+        treatment = DefaultTrafficTreatment.builder()
+            .setOutput(PortNumber.CONTROLLER);
+        writeFlowRule(igd_device_id, selector, treatment, PacketPriority.HIGH.priorityValue() + 1, 0, false);
+    }
+
+    private void initRouteToGateWay(Device device) {
+        if (device.id().equals(igd_device_id)) {
+            return;
+        }
+
+        TrafficSelector.Builder selector = DefaultTrafficSelector.builder()
+            .matchEthDst(privateMac);
+        TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+            .setOutput(PortNumber.FLOOD);
+
+        Set<Path> path_to_igd = pathService.getPaths(device.id(), igd_device_id);
+        if (path_to_igd.isEmpty()) {
+            log.warn("Fail to find a path to igd on device: {}", device.id().toString());
+            writeFlowRule(device.id(), selector, treatment, 20, 0, false);
+            return;
+        }
+
+        List<Link> links = path_to_igd.iterator().next().links();
+        if (links.isEmpty()) {
+            log.warn("Fail to parse links between igd and device: {}", device.id().toString());
+            writeFlowRule(device.id(), selector, treatment, 20, 0, false);
+            return;
+        }
+
+        for (Link link : links) {
+            if (link.src().deviceId().equals(device.id())) {
+                treatment = DefaultTrafficTreatment.builder()
+                    .setOutput(link.src().port());
+                break;
+            }
+        }
+
+        writeFlowRule(device.id(), selector, treatment, 20, 0, false);
+        return;
     }
 
     private void startServer() {
@@ -196,37 +283,68 @@ public class AppComponent {
         httpServer.stop();
     }
 
+    public void writeFlowRule(DeviceId deviceId, TrafficSelector.Builder selector,
+    TrafficTreatment.Builder treatment, int priority, int timeout, boolean idle) {
+        if (idle) {
+            writeFlowRule(deviceId, selector, treatment, priority, timeout, idle, FlowRemoveReason.IDLE_TIMEOUT);
+        } else {
+            writeFlowRule(deviceId, selector, treatment, priority, timeout, idle, FlowRemoveReason.NO_REASON);
+        }
+    }
+
+    public void writeFlowRule(DeviceId deviceId, TrafficSelector.Builder selector,
+            TrafficTreatment.Builder treatment, int priority, int timeout, boolean idle, FlowRemoveReason reason) {
+        FlowRule.Builder rule_builder = DefaultFlowRule.builder()
+            .withSelector(selector.build())
+            .withTreatment(treatment.build())
+            .withPriority(priority)
+            .forDevice(deviceId)
+            .fromApp(appId);
+
+        if (idle) { //0 is seen as permanant in idleTimeout function
+            rule_builder.withIdleTimeout(timeout);
+        } else if (timeout == 0) {
+            rule_builder.makePermanent();
+        } else {
+            rule_builder.makeTemporary(timeout);
+        }
+
+        if (!reason.equals(FlowRemoveReason.NO_REASON)) {
+            rule_builder.withReason(reason);
+        }
+
+        flowRuleService.applyFlowRules(rule_builder.build());
+    }
+
     private class PortmappingProcessor implements DatapathExecutable {
+
         public boolean UpdateRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
-            AddRuleForEntry(entry, rhost);
-            return true;
+            return AddRuleForEntry(entry, rhost);
         }
 
         public boolean AddRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
-            TrafficSelector.Builder selector = buildMatchRule(entry, rhost);
-            TrafficTreatment.Builder treatment = buildAction(entry, rhost);
+            //Check if the internal host exist.
+            if (hostService.getHostsByIp(entry.GetInternalHostByIpAddress()).isEmpty()) {
+                log.info("Requested internal host does not exist in the LAN.");
+                return false;
+            }
 
-            int priority = basepriority + rhost.GetRhostByIpPrefix().prefixLength();
-            FlowRule rule = DefaultFlowRule.builder()
-                .withSelector(selector.build())
-                .withTreatment(treatment.build())
-                .forDevice(DeviceId.deviceId(router_device_id))
-                .withPriority(priority)
-                .makeTemporary(rhost.GetLeaseDuration())
-                .fromApp(appId)
-                .build();
-            flowRuleService.applyFlowRules(rule);
+            TrafficSelector.Builder selector = setInterceptMatchRule(entry, rhost);
+            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+                .setOutput(PortNumber.CONTROLLER);
 
+            int priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
+            writeFlowRule(igd_device_id, selector, treatment, priority, rhost.GetLeaseDuration(), false);
             return true;
         }
 
         public boolean DeleteRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
-            TrafficSelector.Builder selector = buildMatchRule(entry, rhost);
+            TrafficSelector.Builder selector = setInterceptMatchRule(entry, rhost);
 
-            int priority = basepriority + rhost.GetRhostByIpPrefix().prefixLength();
+            int priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
             FlowRule rule = DefaultFlowRule.builder()
                 .withSelector(selector.build())
-                .forDevice(DeviceId.deviceId(router_device_id))
+                .forDevice(igd_device_id)
                 .makeTemporary(0)
                 .withReason(FlowRemoveReason.DELETE)
                 .withPriority(priority)
@@ -237,10 +355,17 @@ public class AppComponent {
             return true;
         }
 
-        private TrafficSelector.Builder buildMatchRule(PortmappingEntry entry, RemoteHostDetail rhost) {
+        private TrafficSelector.Builder setInterceptMatchRule(PortmappingEntry entry, RemoteHostDetail rhost) {
             TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
 
-            selector.matchEthType(Ethernet.TYPE_IPV4);
+            selector.matchInPort(igd_ext_port)
+                .matchEthType(Ethernet.TYPE_IPV4)
+                .matchIPDst(igd_ext_ipaddr.toIpPrefix());
+
+            IpPrefix rhost_prefix = rhost.GetRhostByIpPrefix();
+            if (!rhost_prefix.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
+                selector.matchIPSrc(rhost_prefix);
+            }
 
             if (entry.GetProtocol() == Protocol.TCP) {
                 selector.matchIPProtocol(IPv4.PROTOCOL_TCP);
@@ -250,35 +375,13 @@ public class AppComponent {
                 selector.matchUdpDst(TpPort.tpPort(entry.GetExternalPort()));
             }
 
-
-            IpPrefix rhost_prefix = rhost.GetRhostByIpPrefix();
-            if (!rhost_prefix.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
-                selector.matchIPSrc(rhost_prefix);
-            }
-
             return selector;
-        }
-
-        private TrafficTreatment.Builder buildAction(PortmappingEntry entry, RemoteHostDetail rhost) {
-            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder();
-
-            if (entry.GetProtocol() == Protocol.TCP) {
-                treatment.setTcpDst(TpPort.tpPort(entry.GetInternalPort()));
-            } else {
-                treatment.setUdpDst(TpPort.tpPort(entry.GetInternalPort()));
-            }
-
-            treatment.setIpDst(entry.GetInternalHostByIpAddress());
-
-            return treatment;
         }
     }
 
     private class IGDFlowRuleListener implements FlowRuleListener {
         private final String TCP = String.valueOf((int) IPv4.PROTOCOL_TCP);
         private final String UDP = String.valueOf((int) IPv4.PROTOCOL_UDP);
-
-        ConcurrentHashMap<FlowId, FlowRemoveReason> registry = new ConcurrentHashMap<>();
 
         public void event(FlowRuleEvent event) {
             if (event.subject().appId() != appId.id()) {
@@ -289,10 +392,10 @@ public class AppComponent {
 
             switch (event.type()) {
                 case RULE_ADDED:
-                    log.info("Flow added: {}", rule.toString());
+                    //log.info("Flow added: {}", rule.toString());
                     return;
                 case RULE_REMOVED:
-                    FlowRemoveReason reason = registry.get(rule.id());
+                    FlowRemoveReason reason = rule.reason();
                     switch (reason) {
                         case NO_REASON: //triggered by onos timeout mechanism
                             try {
@@ -304,15 +407,12 @@ public class AppComponent {
                         case DELETE: //triggered by delete method.
                             log.info("Flow removed: {}", rule.toString());
                             break;
+                        case IDLE_TIMEOUT:
+                            break;
                         default :
                             log.warn("Unknown flow removed reason :{}", reason.toString());
                             break;
                     }
-
-                    registry.remove(rule.id());
-                    return;
-                case RULE_REMOVE_REQUESTED:
-                    registry.put(rule.id(), rule.reason());
                     return;
                 default:
                     return;
@@ -363,7 +463,7 @@ public class AppComponent {
 
         /**
          * Extract Criterion value.
-         * @param cri Criterion to be parsed.
+         * @param cri Criterion to be parsed. It should be in format "[tag]:[value]"
          * @return value in type string. Empty string will be returned if fail to extract the value.
          */
         private String extractCriterionValue(Criterion cri) throws IllegalArgumentException {
@@ -380,9 +480,8 @@ public class AppComponent {
 
     private class OPFIfaceWatcher implements IfaceWatchable {
         public InterfaceStats GetIGDExtIfaceStats() {
-            DeviceId router_id = DeviceId.deviceId(router_device_id);
-            Port port = deviceService.getPort(router_id, igd_ext_port);
-            PortStatistics stats = deviceService.getStatisticsForPort(router_id, igd_ext_port);
+            Port port = deviceService.getPort(igd_device_id, igd_ext_port);
+            PortStatistics stats = deviceService.getStatisticsForPort(igd_device_id, igd_ext_port);
 
             InterfaceStats ret = new InterfaceStats();
             ret.iface_status = port.isEnabled();
@@ -404,11 +503,11 @@ public class AppComponent {
         }
 
         public String GetIGDExtAddr() {
-            return igd_ext_ipaddr;
+            return igd_ext_ipaddr.toString();
         }
 
         public String GetIGDDeviceID() {
-            return router_device_id;
+            return igd_device_id.toString();
         }
     }
 
@@ -421,19 +520,260 @@ public class AppComponent {
             ConnectPoint cp = pkt.receivedFrom();
 
             Ethernet frame = pkt.parsed();
-            if (frame.getEtherType() != Ethernet.TYPE_ARP) {
+            if (frame == null) {
                 return;
             }
 
-            ARP arp_packet = (ARP) frame.getPayload();
-            if (arp_packet.getProtocolType() != ARP.PROTO_TYPE_IP) {
+            MacAddress src_mac = frame.getSourceMAC();
+
+            if (frame.getEtherType() == Ethernet.TYPE_ARP) {
+                ARP arp = (ARP) frame.getPayload();
+                log.info(arp.toString());
+                log.info(cp.toString());
+                if (arp.getOpCode() == ARP.OP_REQUEST) {
+                    processARPRequest(frame, arp, cp);
+                }
                 return;
             }
 
-            Ip4Address src_ip4 = Ip4Address.valueOf(arp_packet.getSenderProtocolAddress());
-            log.info("Receive ARP packet: ");
-            log.info("From switch: {}", cp.deviceId());
-            log.info("Sent by:  ip4: {}", src_ip4);
+            if (!(frame.getEtherType() == Ethernet.TYPE_IPV4)) {
+                return;
+            }
+
+            if (!cp.deviceId().equals(igd_device_id)) {
+                log.info("Got ip packet inside LAN\nDevice: {}\nFrame: {}", cp.toString(), frame.toString());
+                return;
+            }
+
+            IPv4 ip_payload = (IPv4) frame.getPayload();
+            Ip4Address src_addr = Ip4Address.valueOf(ip_payload.getSourceAddress());
+            Ip4Address dst_addr = Ip4Address.valueOf(ip_payload.getDestinationAddress());
+
+            if (!dst_addr.equals(igd_ext_ipaddr)) {
+                log.info("Got ip packet with invalid dst ip address.\nPacket: {}", ip_payload.toString());
+                return;
+            }
+
+            byte protocol = ip_payload.getProtocol();
+            Protocol pm_proto;
+            int dst_port;
+            if (protocol == IPv4.PROTOCOL_TCP) {
+                TCP tcp_payload = (TCP) ip_payload.getPayload();
+                pm_proto = Protocol.TCP;
+                dst_port = tcp_payload.getDestinationPort();
+            } else if (protocol == IPv4.PROTOCOL_UDP) {
+                UDP udp_payload = (UDP) ip_payload.getPayload();
+                pm_proto = Protocol.UDP;
+                dst_port = udp_payload.getDestinationPort();
+            } else {
+                return;
+            }
+
+            PortmappingEntry entry = portmappingExecutor.GetEntry(dst_port, pm_proto);
+            if (entry == null) {
+                return;
+            }
+            RemoteHostDetail rhost = entry.GetLongestCoveringRhost(src_addr);
+            if (rhost == null) {
+                return;
+            }
+
+            IpAddress ihost_addr = entry.GetInternalHostByIpAddress();
+
+            Set<Host> hosts = hostService.getHostsByIp(ihost_addr);
+            if (hosts.isEmpty()) {
+                log.error("No internal host with such ip4 address: {}", ihost_addr.toString());
+                return;
+            } else if (hosts.size() != 1) {
+                log.warn("Multiple internal host with the same ip address: {}.\n" +
+                    "However, Only one of them would get redirect.", ihost_addr.toString());
+            }
+            Host host = hosts.iterator().next(); //only get one host
+
+            Set<Path> paths = pathService.getPaths(igd_device_id, host.id());
+            if (paths.isEmpty()) {
+                log.error("No available path found between IGD and internal host : {}", host.toString());
+                return;
+            }
+
+            Path path = paths.iterator().next();
+            PortNumber in_port = igd_ext_port;
+            PortNumber packetOut_port = PortNumber.FLOOD;
+            for (Link link : path.links()) {
+                if (link.src().deviceId().equals(igd_device_id)) {
+                    setNATRoute(igd_device_id, in_port, link.src().port(),
+                            src_mac, host.mac(), src_addr, entry, rhost.GetLeaseDuration());
+                    packetOut_port = link.src().port();
+                } else {
+                    setInternalRoute(link.src().deviceId(), in_port,
+                            link.src().port(), privateMac, host.mac(), rhost.GetLeaseDuration());
+                }
+
+                in_port = link.dst().port();
+            }
+
+            TrafficTreatment.Builder action = DefaultTrafficTreatment.builder()
+                .setEthSrc(privateMac)
+                .setEthDst(host.mac())
+                .setIpDst(ihost_addr);
+
+            TpPort ihost_port = TpPort.tpPort(entry.GetInternalPort());
+            if (entry.GetProtocol() == Protocol.TCP) {
+                action.setTcpDst(ihost_port);
+            } else {
+                action.setUdpDst(ihost_port);
+            }
+
+            action.setOutput(packetOut_port);
+            packetService.emit(new DefaultOutboundPacket(
+                cp.deviceId(),
+                action.build(),
+                ByteBuffer.wrap(frame.serialize())
+            ));
         }
+
+        private void processARPRequest(Ethernet eth_frame, ARP req, ConnectPoint cp) {
+
+            Ip4Address target_addr = Ip4Address.valueOf(req.getTargetProtocolAddress());
+            PortNumber in_port = cp.port();
+
+            Ethernet reply;
+            if (target_addr.equals(privateIPaddr) &&
+                (!cp.deviceId().equals(igd_device_id) || !in_port.equals(igd_ext_port))) {
+                //only accept private request from inner port of igd, accept all if from other device
+                reply = ARP.buildArpReply(privateIPaddr, privateMac, eth_frame);
+            } else if (target_addr.equals(igd_ext_ipaddr) &&
+                cp.deviceId().equals(igd_device_id) && in_port.equals(igd_ext_port)) {
+                //only accept public request from ext port of igd, accept all if from other device
+                reply = ARP.buildArpReply(igd_ext_ipaddr, publicMac, eth_frame);
+            } else {
+                return;
+            }
+
+            TrafficTreatment.Builder action = DefaultTrafficTreatment.builder();
+            action.setOutput(in_port);
+            packetService.emit(new DefaultOutboundPacket(
+              cp.deviceId(),
+              action.build(),
+              ByteBuffer.wrap(reply.serialize())
+            ));
+        }
+
+        private void setNATRoute(DeviceId device_id, PortNumber in_port, PortNumber out_port,
+                        MacAddress rhost_mac, MacAddress ihost_mac,
+                        IpAddress rhost_addr, PortmappingEntry entry, int nat_timeout) {
+            int timeout = nat_timeout < idle_timeout ? nat_timeout : idle_timeout;
+
+            IpAddress ihost_addr = entry.GetInternalHostByIpAddress();
+            TpPort ihost_port = TpPort.tpPort(entry.GetInternalPort());
+
+            //Set Inbound rule
+            TrafficSelector.Builder selector = DefaultTrafficSelector.builder()
+                .matchInPort(in_port)
+                .matchEthType(Ethernet.TYPE_IPV4)
+                .matchIPSrc(rhost_addr.toIpPrefix())
+                .matchIPDst(igd_ext_ipaddr.toIpPrefix());
+
+            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+                .setEthSrc(privateMac)
+                .setEthDst(ihost_mac)
+                .setIpDst(ihost_addr);
+
+            int eport = entry.GetExternalPort();
+            if (entry.GetProtocol() == Protocol.TCP) {
+                selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
+                        .matchTcpDst(TpPort.tpPort(eport));
+                //    .matchTcpSrc(TpPort.tpPort(src_port));
+
+                treatment.setTcpDst(ihost_port);
+            } else {
+                selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
+                        .matchUdpDst(TpPort.tpPort(eport));
+                //    .matchUdpSrc(TpPort.tpPort(src_port));
+
+                treatment.setUdpDst(ihost_port);
+            }
+
+            treatment.setOutput(out_port);
+
+            writeFlowRule(device_id, selector, treatment, nat_redirect_priority, timeout, true);
+
+            //Set Outbound rule
+            selector = DefaultTrafficSelector.builder()
+                .matchInPort(out_port)
+                .matchEthType(Ethernet.TYPE_IPV4)
+                .matchIPSrc(ihost_addr.toIpPrefix())
+                .matchIPDst(rhost_addr.toIpPrefix());
+
+            treatment = DefaultTrafficTreatment.builder()
+                .setEthSrc(publicMac)
+                .setEthDst(rhost_mac)
+                .setIpSrc(igd_ext_ipaddr);
+
+            if (entry.GetProtocol() == Protocol.TCP) {
+                selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
+                        .matchTcpSrc(ihost_port);
+                //    .matchTcpDst(TpPort.tpPort(src_port));
+
+                treatment.setTcpSrc(TpPort.tpPort(eport));
+            } else {
+                selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
+                        .matchUdpSrc(ihost_port);
+                //    .matchUdpDst(TpPort.tpPort(src_port));
+
+                treatment.setUdpSrc(TpPort.tpPort(eport));
+            }
+
+            treatment.setOutput(in_port);
+
+            writeFlowRule(device_id, selector, treatment, nat_redirect_priority, timeout, true);
+        }
+
+        private void setInternalRoute(DeviceId device_id, PortNumber in_port,
+                        PortNumber out_port, MacAddress src_mac, MacAddress dst_mac, int nat_timeout) {
+            int timeout = nat_timeout < idle_timeout ? nat_timeout : idle_timeout;
+            //Set Inbound rules
+            TrafficSelector.Builder selector = DefaultTrafficSelector.builder()
+                .matchInPort(in_port)
+                .matchEthSrc(src_mac)
+                .matchEthDst(dst_mac);
+
+            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+                .setOutput(out_port);
+
+            writeFlowRule(device_id, selector, treatment, internal_forward_priority, timeout, true);
+
+            //Set Outbound rules
+            selector = DefaultTrafficSelector.builder()
+                .matchInPort(out_port)
+                .matchEthSrc(dst_mac)
+                .matchEthDst(src_mac);
+
+            treatment = DefaultTrafficTreatment.builder()
+                .setOutput(in_port);
+
+            writeFlowRule(device_id, selector, treatment, internal_forward_priority, timeout, true);
+        }
+    }
+
+    private String randomMACAddress() {
+        Random rand = new Random();
+        byte[] macAddr = new byte[6];
+        rand.nextBytes(macAddr);
+
+        //zeroing last 2 bytes to make it unicast and locally adminstrated
+        macAddr[0] = (byte) (macAddr[0] & (byte) 254);
+
+        StringBuilder sb = new StringBuilder(18);
+        for (byte b : macAddr) {
+
+            if (sb.length() > 0) {
+                sb.append(":");
+            }
+
+            sb.append(String.format("%02x", b));
+        }
+
+        return sb.toString();
     }
 }
