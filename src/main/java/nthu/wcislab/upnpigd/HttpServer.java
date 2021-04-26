@@ -72,8 +72,12 @@ public class HttpServer {
     }
 
     public void stop() {
-        bossGroup.shutdownGracefully();
-        workerGroup.shutdownGracefully();
+        try {
+            bossGroup.shutdownGracefully();
+            workerGroup.shutdownGracefully();
+        } catch (NullPointerException e) {
+            log.warn("Server may haven't been activated ever.");
+        }
     }
 
     protected static class RouteMatcher {
