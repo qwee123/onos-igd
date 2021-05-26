@@ -4,6 +4,7 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import org.json.JSONException;
 import static io.netty.util.CharsetUtil.UTF_8;
 
@@ -12,13 +13,12 @@ import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry;
 import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry.Protocol;
 import nthu.wcislab.upnpigd.portmapping.PortmappingExecutor.PortmappingEntry.RemoteHostDetail;
 
+import java.util.ArrayList;
+
 public class PortmappingSingleHandler extends PortmappingHandler {
 
-    private static String json_tag_auto = "autoselect"; // To distinquish AddAny and normal Add method
     private static String json_tag_return_code = "return_code";
     private static String json_tag_permit_port_range = "permit_port_range";
-    private static String json_tag_permit_port_range_max = "max";
-    private static String json_tag_permit_port_range_min = "min";
 
     private static int success_ret_code = 0;
     private static int conflicted_with_other_app_ret_code = -2;
@@ -77,17 +77,8 @@ public class PortmappingSingleHandler extends PortmappingHandler {
     @Override
     protected FullHttpResponse handlePost(FullHttpRequest request) {
         JSONObject jobj = new JSONObject(request.content().toString(UTF_8));
-        boolean autoselect = false;
 
-        try {
-            autoselect = jobj.getBoolean(json_tag_auto);
-        } catch (JSONException e) {
-            log.error("Fail to parse received json object of Post method.");
-            log.error("{}", e.getMessage());
-            return BADREQUEST.handle(null);
-        }
-
-        if (autoselect) {
+        if (jobj.has(json_tag_permit_port_range)) {
             return handleAddAnyPortmapping(jobj);
         } else {
             return handleNormalAddPortmapping(jobj);
@@ -174,28 +165,46 @@ public class PortmappingSingleHandler extends PortmappingHandler {
     }
 
     private FullHttpResponse handleAddAnyPortmapping(JSONObject request) {
-        int eport, max_port_num, min_port_num;
+        int eport;
         Protocol proto;
+        JSONArray permit_port_range_jobj;
+        ArrayList<portRange> permit_port_ranges;
+
         try {
+            permit_port_range_jobj = request.getJSONArray(json_tag_permit_port_range);
             eport = request.getInt(json_tag_eport);
             proto = request.getString(json_tag_proto).toLowerCase().equals("tcp") ? Protocol.TCP : Protocol.UDP;
-            JSONObject permit_range  = request.getJSONObject(json_tag_permit_port_range);
-            max_port_num = permit_range.getInt(json_tag_permit_port_range_max);
-            min_port_num = permit_range.getInt(json_tag_permit_port_range_min);
+
+            permit_port_ranges = new ArrayList<portRange>(permit_port_range_jobj.length());
+            permit_port_range_jobj.forEach(portrange -> {
+                if (!(portrange instanceof JSONArray)) {
+                    throw new JSONException("One of the entry of the allowed_port_range array is not an array.");
+                }
+
+                JSONArray range = (JSONArray) portrange;
+
+                if (range.length() != 2) {
+                    throw new JSONException("Array of allowed_port_range's entry has incorrect length.");
+                }
+
+                int min_port_num = range.getInt(0);
+                int max_port_num = range.getInt(1);
+
+                if (max_port_num < min_port_num
+                    || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(max_port_num)
+                    || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(min_port_num)) {
+                    throw new JSONException("Invalid port range. Must between 0-65535." +
+                        "And the first one must be the minimun port number.");
+                }
+                permit_port_ranges.add(new portRange(min_port_num, max_port_num));
+            });
         } catch (JSONException e) {
             log.error("Fail to parse received json object of Post method.");
             log.error("{}", e.getMessage());
             return BADREQUEST.handle(null);
         }
 
-        if (max_port_num < min_port_num
-            || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(max_port_num)
-            || !PortmappingExecutor.PortmappingEntry.isValidPortNubmer(min_port_num)) {
-            log.error("Invalid port range. Must between 0-65535.");
-            return BADREQUEST.handle(null);
-        }
-
-        eport = findAvailablePort(eport, proto, max_port_num, min_port_num);
+        eport = findAvailablePort(eport, proto, permit_port_ranges);
         if (eport == -1) {
             return CONFLICT.handle(null);
         }
@@ -219,38 +228,40 @@ public class PortmappingSingleHandler extends PortmappingHandler {
         return handleNormalAddPortmapping(entry);
     }
 
-    private int findAvailablePort(int eport, Protocol proto, int max, int min) {
-        int offset = 1;
-        boolean sign = false;
-        while (null != pm_executor.GetEntry(eport, proto)) {
-            eport += (sign ? offset : -1 * offset);
-            sign = !sign;
-            offset++;
+    /**
+     * This function will first check if the requested eport is available.
+     * If it's available, return the requested port.
+     * If not, the function will try to find another available port based on list provided.
+     * @param eport requested eport.
+     * @param proto requested protocol.
+     * @param ranges allowed_port_range.
+     * @return available ext_port. -1 if no such port found.
+     */
+    private int findAvailablePort(int eport, Protocol proto, ArrayList<portRange> ranges) {
 
-            if (eport > max || eport < min) {
-                break;
+        if (null == pm_executor.GetEntry(eport, proto)) {
+            return eport;
+        }
+
+        for (portRange portRange : ranges) {
+            for (int i = portRange.min_port; i <= portRange.max_port; i++) {
+                if (null == pm_executor.GetEntry(i, proto)) {
+                    return i;
+                }
             }
         }
 
-        if (eport > max) {
-            eport += (sign ? offset : -1 * offset);
-            while (eport >= min && null != pm_executor.GetEntry(eport, proto)) {
-                eport--;
-            }
+        return -1; //no available found.
+    }
 
-            if (eport < min) {
-                return -1;
-            }
-        } else if (eport < min) {
-            eport += (sign ? offset : -1 * offset);
-            while (eport <= max && null != pm_executor.GetEntry(eport, proto)) {
-                eport++;
-            }
+    private class portRange {
+        private int min_port;
+        private int max_port;
 
-            if (eport > max) {
-                return -1;
-            }
+        protected portRange(int min_port, int max_port) {
+            this.min_port = min_port;
+            this.max_port = max_port;
         }
-        return eport;
+
     }
 }

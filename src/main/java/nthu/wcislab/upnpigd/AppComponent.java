@@ -128,7 +128,7 @@ public class AppComponent {
     private final DeviceId igd_device_id = DeviceId.deviceId("of:000012bf6e85b74f");
     private final String igd_ext_iface_name = "wan1";
     private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
-    private final int idle_timeout = 20;
+    private final int idle_timeout = 10;
     private final Ip4Address privateIPaddr = Ip4Address.valueOf("172.16.0.1");
     private final MacAddress privateMac = MacAddress.valueOf(randomMACAddress());
     private final MacAddress publicMac = MacAddress.valueOf(randomMACAddress());
@@ -479,8 +479,7 @@ public class AppComponent {
 
             if (frame.getEtherType() == Ethernet.TYPE_ARP) {
                 ARP arp = (ARP) frame.getPayload();
-                log.info(arp.toString());
-                log.info(cp.toString());
+                log.debug(arp.toString());
                 if (arp.getOpCode() == ARP.OP_REQUEST) {
                     processARPRequest(frame, arp, cp);
                 }
@@ -501,20 +500,22 @@ public class AppComponent {
             Ip4Address dst_addr = Ip4Address.valueOf(ip_payload.getDestinationAddress());
 
             if (!dst_addr.equals(igd_ext_ipaddr)) {
-                //log.debug("Got ip packet with invalid dst ip address.\nPacket: {}", ip_payload.toString());
+                log.debug("Got ip packet with invalid dst ip address.\nPacket: {}", ip_payload.toString());
                 return;
             }
 
             byte protocol = ip_payload.getProtocol();
             Protocol pm_proto;
-            int dst_port;
+            int src_port, dst_port;
             if (protocol == IPv4.PROTOCOL_TCP) {
                 TCP tcp_payload = (TCP) ip_payload.getPayload();
                 pm_proto = Protocol.TCP;
+                src_port = tcp_payload.getSourcePort();
                 dst_port = tcp_payload.getDestinationPort();
             } else if (protocol == IPv4.PROTOCOL_UDP) {
                 UDP udp_payload = (UDP) ip_payload.getPayload();
                 pm_proto = Protocol.UDP;
+                src_port = udp_payload.getSourcePort();
                 dst_port = udp_payload.getDestinationPort();
             } else {
                 return;
@@ -553,7 +554,7 @@ public class AppComponent {
             for (Link link : path.links()) {
                 if (link.src().deviceId().equals(igd_device_id)) {
                     setNATRoute(igd_device_id, in_port, link.src().port(),
-                            src_mac, host.mac(), src_addr, entry, rhost.GetLeaseDuration());
+                            src_mac, host.mac(), src_addr, src_port, entry, rhost.GetLeaseDuration());
                     packetOut_port = link.src().port();
                 } else {
                     setInternalRoute(link.src().deviceId(), in_port,
@@ -612,7 +613,8 @@ public class AppComponent {
 
         private void setNATRoute(DeviceId device_id, PortNumber in_port, PortNumber out_port,
                         MacAddress rhost_mac, MacAddress ihost_mac,
-                        IpAddress rhost_addr, PortmappingEntry entry, int nat_timeout) {
+                        IpAddress rhost_addr, int rhost_sport,
+                        PortmappingEntry entry, int nat_timeout) {
             int timeout = nat_timeout < idle_timeout ? nat_timeout : idle_timeout;
 
             IpAddress ihost_addr = entry.GetInternalHostByIpAddress();
@@ -633,14 +635,14 @@ public class AppComponent {
             int eport = entry.GetExternalPort();
             if (entry.GetProtocol() == Protocol.TCP) {
                 selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
-                        .matchTcpDst(TpPort.tpPort(eport));
-                //    .matchTcpSrc(TpPort.tpPort(src_port));
+                        .matchTcpDst(TpPort.tpPort(eport))
+                        .matchTcpSrc(TpPort.tpPort(rhost_sport));
 
                 treatment.setTcpDst(ihost_port);
             } else {
                 selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
-                        .matchUdpDst(TpPort.tpPort(eport));
-                //    .matchUdpSrc(TpPort.tpPort(src_port));
+                        .matchUdpDst(TpPort.tpPort(eport))
+                        .matchUdpSrc(TpPort.tpPort(rhost_sport));
 
                 treatment.setUdpDst(ihost_port);
             }
@@ -663,14 +665,14 @@ public class AppComponent {
 
             if (entry.GetProtocol() == Protocol.TCP) {
                 selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
-                        .matchTcpSrc(ihost_port);
-                //    .matchTcpDst(TpPort.tpPort(src_port));
+                        .matchTcpSrc(ihost_port)
+                        .matchTcpDst(TpPort.tpPort(rhost_sport));
 
                 treatment.setTcpSrc(TpPort.tpPort(eport));
             } else {
                 selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
-                        .matchUdpSrc(ihost_port);
-                //    .matchUdpDst(TpPort.tpPort(src_port));
+                        .matchUdpSrc(ihost_port)
+                        .matchUdpDst(TpPort.tpPort(rhost_sport));
 
                 treatment.setUdpSrc(TpPort.tpPort(eport));
             }
