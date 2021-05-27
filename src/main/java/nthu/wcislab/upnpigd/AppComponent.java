@@ -135,6 +135,7 @@ public class AppComponent {
     private final int public_arp_intercept_priority = PacketPriority.HIGH1.priorityValue();
     private final int nat_intercept_priority = PacketPriority.HIGH1.priorityValue();
     private final int nat_redirect_priority = PacketPriority.HIGH2.priorityValue();
+    private final int http_port = 40000;
 
     //should be the same with fwd app, set to 30000 in default
     private final int internal_forward_priority = PacketPriority.MEDIUM.priorityValue();
@@ -222,7 +223,7 @@ public class AppComponent {
     }
 
     private void startServer() {
-        httpServer = new HttpServer(40000);
+        httpServer = new HttpServer(http_port);
         try {
             httpServer.run(ifaceWatcher, portmappingExecutor);
         } catch (Exception e) {
