@@ -116,8 +116,8 @@ public class PortmappingExecutor {
             if (!datapath.DeleteRuleForEntry(entry, rhost)) {
                 return 0;
             }
-            table.remove(indexer);
         }
+        table.remove(indexer);
 
         return 1;
     }
