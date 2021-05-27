@@ -636,14 +636,14 @@ public class AppComponent {
             int eport = entry.GetExternalPort();
             if (entry.GetProtocol() == Protocol.TCP) {
                 selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
-                        .matchTcpDst(TpPort.tpPort(eport))
-                        .matchTcpSrc(TpPort.tpPort(rhost_sport));
+                        .matchTcpDst(TpPort.tpPort(eport));
+                //        .matchTcpSrc(TpPort.tpPort(rhost_sport));
 
                 treatment.setTcpDst(ihost_port);
             } else {
                 selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
-                        .matchUdpDst(TpPort.tpPort(eport))
-                        .matchUdpSrc(TpPort.tpPort(rhost_sport));
+                        .matchUdpDst(TpPort.tpPort(eport));
+                //        .matchUdpSrc(TpPort.tpPort(rhost_sport));
 
                 treatment.setUdpDst(ihost_port);
             }
@@ -666,14 +666,14 @@ public class AppComponent {
 
             if (entry.GetProtocol() == Protocol.TCP) {
                 selector.matchIPProtocol(IPv4.PROTOCOL_TCP)
-                        .matchTcpSrc(ihost_port)
-                        .matchTcpDst(TpPort.tpPort(rhost_sport));
+                        .matchTcpSrc(ihost_port);
+                //        .matchTcpDst(TpPort.tpPort(rhost_sport));
 
                 treatment.setTcpSrc(TpPort.tpPort(eport));
             } else {
                 selector.matchIPProtocol(IPv4.PROTOCOL_UDP)
-                        .matchUdpSrc(ihost_port)
-                        .matchUdpDst(TpPort.tpPort(rhost_sport));
+                        .matchUdpSrc(ihost_port);
+                //        .matchUdpDst(TpPort.tpPort(rhost_sport));
 
                 treatment.setUdpSrc(TpPort.tpPort(eport));
             }

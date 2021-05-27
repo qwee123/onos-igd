@@ -1,5 +1,6 @@
 package nthu.wcislab.upnpigd.portmapping;
 
+import org.apache.commons.collections.iterators.ArrayListIterator;
 import org.json.JSONObject;
 import org.onlab.packet.IpAddress;
 import org.onlab.packet.IpPrefix;
@@ -16,6 +17,7 @@ public class PortmappingExecutor {
 
     private DatapathExecutable datapath;
     private ConcurrentHashMap<tableIndex, PortmappingEntry> table;
+    private ConcurrentHashMap<IpAddress, ArrayList<Integer>> internalEntryTable;
     //init a common index instance, instead of creating/allocating instance everytime for quries and inserts.
     private tableIndex indexer;
 
@@ -23,6 +25,7 @@ public class PortmappingExecutor {
         this.datapath = datapath;
         this.table = new ConcurrentHashMap<>();
         this.indexer = new tableIndex();
+        this.internalEntryTable = new ConcurrentHashMap<>();
     }
 
     /*
@@ -46,6 +49,16 @@ public class PortmappingExecutor {
      * @throws IllegalArgumentException Throw exception if passed entry contains illegal arguments.
      */
     public int AddEntry(PortmappingEntry entry) throws IllegalArgumentException {
+
+        /* Check if an internal entry(iaddr+iport) already exists. */
+        ArrayList<Integer> iports = this.internalEntryTable.get(entry.ihost);
+        if (iports != null) {
+            for (Integer iport : iports) {
+                if (iport.equals(entry.iport)) {
+                    return -1;
+                }
+            }
+        }
 
         if (entry.rhost_list.size() != 1 || null == entry.rhost_list.get(0)) {
             throw new IllegalArgumentException("In current version," +
@@ -116,8 +129,9 @@ public class PortmappingExecutor {
             if (!datapath.DeleteRuleForEntry(entry, rhost)) {
                 return 0;
             }
-            table.remove(indexer);
         }
+        table.remove(indexer);
+        removeInternalHostEntry(entry.ihost, entry.iport);
 
         return 1;
     }
@@ -150,6 +164,7 @@ public class PortmappingExecutor {
 
         if (entry.GetAllRemoteHostDetail().size() == 0) {
             table.remove(indexer);
+            removeInternalHostEntry(entry.ihost, entry.iport);
         }
         return 1;
     }
@@ -178,6 +193,7 @@ public class PortmappingExecutor {
 
         if (entry.GetAllRemoteHostDetail().size() == 0) {
             table.remove(indexer);
+            removeInternalHostEntry(entry.ihost, entry.iport);
         }
     }
 
@@ -262,6 +278,31 @@ public class PortmappingExecutor {
     private void appendIntoTable(PortmappingEntry entry) {
         indexer.setIndex(entry.eport, entry.proto);
         table.put(indexer, entry);
+
+        ArrayList<Integer> iports = internalEntryTable.get(entry.ihost);
+        if (iports == null) {
+            iports = new ArrayList<Integer>();
+            iports.add(entry.iport);
+            internalEntryTable.put(entry.ihost, iports);
+        } else {
+            iports.add(entry.iport);
+        }
+    }
+
+    private void removeInternalHostEntry(IpAddress ihost, int iport) {
+        ArrayList<Integer> iports = internalEntryTable.get(ihost);
+        if (iports != null) {
+            for (int i = 0; i < iports.size(); i++) {
+                if (iports.get(i).equals(iport)) {
+                    iports.remove(i);
+                    break;
+                }
+            }
+
+            if (iports.size() == 0) {
+                internalEntryTable.remove(ihost);
+            }
+        }
     }
 
     public static class PortmappingEntry {
@@ -480,4 +521,5 @@ public class PortmappingExecutor {
             return result;
         }
     }
+
 }
