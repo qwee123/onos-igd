@@ -129,7 +129,7 @@ public class AppComponent {
     private final MacAddress wan_mac = MacAddress.valueOf("4E:71:A4:85:9D:29");
     private final String igd_ext_iface_name = "wan1";
     private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
-    private final int idle_timeout = 10;
+    private final int idle_timeout = 20;
     private final Ip4Address privateIPaddr = Ip4Address.valueOf("172.16.0.1");
     private final MacAddress privateMac = MacAddress.valueOf(randomMACAddress());
     private final MacAddress publicMac = MacAddress.valueOf(randomMACAddress());
