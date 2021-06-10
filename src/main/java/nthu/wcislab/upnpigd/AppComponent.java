@@ -126,7 +126,7 @@ public class AppComponent {
      * Belowings are just some temporarily setup, or default config.
      */
     private final DeviceId igd_device_id = DeviceId.deviceId("of:000012bf6e85b74f");
-    private final MacAddress wan_mac = MacAddress.valueOf("");
+    private final MacAddress wan_mac = MacAddress.valueOf("4E:71:A4:85:9D:29");
     private final String igd_ext_iface_name = "wan1";
     private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
     private final int idle_timeout = 10;
