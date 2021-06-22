@@ -111,6 +111,28 @@ public class PortmappingExecutor {
     }
 
     /**
+     * Return the corresponding portmapping entry, return null if no such entry exists.
+     * @param ihost internal host address
+     * @param iport internal port of ihost
+     * @param proto protocol filtered by the rule, either TCP or UDP
+     * @return the entry to which the specified ihost, iport and proto is bond, or null if no such entry existed.
+     */
+    public PortmappingEntry GetEntry(IpAddress ihost, int iport, PortmappingEntry.Protocol proto) {
+        ArrayList<Integer> iports = internalEntryTable.get(ihost);
+        if (iports == null || !iports.contains(iport)) {
+            return null;
+        }
+
+        for (ConcurrentHashMap.Entry<tableIndex, PortmappingEntry> entry: table.entrySet()) {
+            PortmappingEntry pm_entry = entry.getValue();
+            if (ihost.equals(pm_entry.ihost) && iport == pm_entry.iport && proto.equals(pm_entry.proto)) {
+                return pm_entry;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Delete entry with specified eport and protocol directly.
      * @param eport external port number
      * @param proto protocol

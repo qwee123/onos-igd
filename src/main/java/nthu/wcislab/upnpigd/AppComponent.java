@@ -54,6 +54,7 @@ import org.onosproject.net.flow.FlowRule.FlowRemoveReason;
 import org.onosproject.net.flow.criteria.Criterion.Type;
 import org.onosproject.net.host.HostService;
 import org.onosproject.net.Host;
+import org.onosproject.net.HostLocation;
 import org.onosproject.net.Path;
 import org.onosproject.net.topology.PathService;
 import org.onosproject.net.Port;
@@ -126,20 +127,21 @@ public class AppComponent {
      * Belowings are just some temporarily setup, or default config.
      */
     private final DeviceId igd_device_id = DeviceId.deviceId("of:000012bf6e85b74f");
-    private final MacAddress wan_mac = MacAddress.valueOf("4E:71:A4:85:9D:29");
-    private final String igd_ext_iface_name = "wan1";
+    private final MacAddress wan_mac = MacAddress.valueOf("c2:67:18:3d:bc:ca");
+    private final String igd_ext_iface_name = "wan3";
     private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
     private final int idle_timeout = 20;
     private final Ip4Address privateIPaddr = Ip4Address.valueOf("172.16.0.1");
     private final MacAddress privateMac = MacAddress.valueOf(randomMACAddress());
-    private final MacAddress publicMac = MacAddress.valueOf(randomMACAddress());
+    private final MacAddress publicMac = MacAddress.valueOf("8a:7c:6d:cc:6a:89");
     private final int public_arp_intercept_priority = PacketPriority.HIGH1.priorityValue();
-    private final int nat_intercept_priority = PacketPriority.HIGH1.priorityValue();
+    private final int nat_intercept_from_wan_priority = PacketPriority.HIGH1.priorityValue();
     private final int nat_redirect_priority = PacketPriority.HIGH2.priorityValue();
     private final int http_port = 40000;
 
     //should be the same with fwd app, set to 30000 in default
     private final int internal_forward_priority = PacketPriority.MEDIUM.priorityValue();
+    private final int nat_intercept_from_lan_priority = PacketPriority.MEDIUM.priorityValue() - 1000;
 
     private PortNumber igd_ext_port;
 
@@ -376,24 +378,33 @@ public class AppComponent {
 
         public boolean AddRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
             //Check if the internal host exist.
-            if (hostService.getHostsByIp(entry.GetInternalHostByIpAddress()).isEmpty()) {
-                log.info("Requested internal host does not exist in the LAN.");
+            Set<Host> hosts = hostService.getHostsByIp(entry.GetInternalHostByIpAddress());
+            if (hosts.isEmpty()) {
+                log.error("Requested internal host does not exist in the LAN.");
                 return false;
             }
 
-            TrafficSelector.Builder selector = setInterceptMatchRule(entry, rhost);
+            // Set intercept rule on IGDSW
+            TrafficSelector.Builder selector = setInboundInterceptMatchRule(entry, rhost);
             TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
                 .setOutput(PortNumber.CONTROLLER);
 
-            int priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
+            int priority = nat_intercept_from_wan_priority + rhost.GetRhostByIpPrefix().prefixLength();
             writeFlowRule(igd_device_id, selector, treatment, priority, rhost.GetLeaseDuration(), false);
+
+            // Set intercept rule on ihost connected SW
+            HostLocation hloc = hosts.iterator().next().location();
+            selector = setOutboundInterceptMatchRule(hloc, entry, rhost);
+
+            priority = nat_intercept_from_lan_priority + rhost.GetRhostByIpPrefix().prefixLength();
+            writeFlowRule(hloc.deviceId(), selector, treatment, priority, rhost.GetLeaseDuration(), false);
             return true;
         }
 
         public boolean DeleteRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
-            TrafficSelector.Builder selector = setInterceptMatchRule(entry, rhost);
+            TrafficSelector.Builder selector = setInboundInterceptMatchRule(entry, rhost);
 
-            int priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
+            int priority = nat_intercept_from_wan_priority + rhost.GetRhostByIpPrefix().prefixLength();
             FlowRule rule = DefaultFlowRule.builder()
                 .withSelector(selector.build())
                 .forDevice(igd_device_id)
@@ -404,10 +415,28 @@ public class AppComponent {
                 .build();
             flowRuleService.removeFlowRules(rule);
 
+            Set<Host> hosts = hostService.getHostsByIp(entry.GetInternalHostByIpAddress());
+            if (hosts.isEmpty()) {
+                log.warn("Requested internal host to be deleted does not exist in the LAN.");
+                return true;
+            }
+            HostLocation hloc = hosts.iterator().next().location();
+
+            selector = setOutboundInterceptMatchRule(hloc, entry, rhost);
+            priority = nat_intercept_from_lan_priority + rhost.GetRhostByIpPrefix().prefixLength();
+            rule = DefaultFlowRule.builder()
+                .withSelector(selector.build())
+                .forDevice(hloc.deviceId())
+                .makeTemporary(0)
+                .withReason(FlowRemoveReason.DELETE)
+                .withPriority(priority)
+                .fromApp(appId)
+                .build();
+            flowRuleService.removeFlowRules(rule);
             return true;
         }
 
-        private TrafficSelector.Builder setInterceptMatchRule(PortmappingEntry entry, RemoteHostDetail rhost) {
+        private TrafficSelector.Builder setInboundInterceptMatchRule(PortmappingEntry entry, RemoteHostDetail rhost) {
             TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
 
             selector.matchInPort(igd_ext_port)
@@ -425,6 +454,30 @@ public class AppComponent {
             } else {
                 selector.matchIPProtocol(IPv4.PROTOCOL_UDP);
                 selector.matchUdpDst(TpPort.tpPort(entry.GetExternalPort()));
+            }
+
+            return selector;
+        }
+
+        private TrafficSelector.Builder setOutboundInterceptMatchRule(HostLocation hloc,
+                                            PortmappingEntry entry, RemoteHostDetail rhost) {
+            TrafficSelector.Builder selector = DefaultTrafficSelector.builder();
+
+            selector.matchInPort(hloc.port())
+                .matchEthType(Ethernet.TYPE_IPV4)
+                .matchIPSrc(entry.GetInternalHostByIpAddress().toIpPrefix());
+
+            IpPrefix rhost_prefix = rhost.GetRhostByIpPrefix();
+            if (!rhost_prefix.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
+                selector.matchIPDst(rhost_prefix);
+            }
+
+            if (entry.GetProtocol() == Protocol.TCP) {
+                selector.matchIPProtocol(IPv4.PROTOCOL_TCP);
+                selector.matchTcpSrc(TpPort.tpPort(entry.GetInternalPort()));
+            } else {
+                selector.matchIPProtocol(IPv4.PROTOCOL_UDP);
+                selector.matchUdpSrc(TpPort.tpPort(entry.GetInternalPort()));
             }
 
             return selector;
@@ -490,11 +543,30 @@ public class AppComponent {
                 return;
             }
 
-            if (!cp.deviceId().equals(igd_device_id)) {
-                log.debug("Got ip packet inside LAN\nDevice: {}\nFrame: {}", cp.toString(), frame.toString());
-                return;
-            }
+            if (cp.deviceId().equals(igd_device_id) && cp.port().equals(igd_ext_port)) {
+                processInboundDNAT(frame, cp);
+            } else {
+                IPv4 ip_payload = (IPv4) frame.getPayload();
+                Ip4Address src_addr = Ip4Address.valueOf(ip_payload.getSourceAddress());
 
+                Set<Host> hosts = hostService.getHostsByIp(src_addr);
+                if (hosts.isEmpty()) {
+                    log.debug("Receive packets inside LAN with unexists source ip: {}", src_addr.toString());
+                    return;
+                }
+                Host host = hosts.iterator().next();
+                HostLocation hloc = host.location();
+
+                if (hloc.equals(cp)) {
+                    processOutboundDNAT(host, frame, cp);
+                } else {
+                    log.debug("Got ip packet inside LAN\nDevice: {}\nFrame: {}", cp.toString(), frame.toString());
+                }
+            }
+            return;
+        }
+
+        private void processInboundDNAT(Ethernet frame, ConnectPoint cp) {
             IPv4 ip_payload = (IPv4) frame.getPayload();
             Ip4Address src_addr = Ip4Address.valueOf(ip_payload.getSourceAddress());
             Ip4Address dst_addr = Ip4Address.valueOf(ip_payload.getDestinationAddress());
@@ -582,6 +654,69 @@ public class AppComponent {
             ));
         }
 
+        private void processOutboundDNAT(Host host, Ethernet frame, ConnectPoint cp) {
+            IPv4 ip_payload = (IPv4) frame.getPayload();
+            Ip4Address src_addr = Ip4Address.valueOf(ip_payload.getSourceAddress());
+            Ip4Address dst_addr = Ip4Address.valueOf(ip_payload.getDestinationAddress());
+
+            byte protocol = ip_payload.getProtocol();
+            Protocol pm_proto;
+            int src_port;
+            if (protocol == IPv4.PROTOCOL_TCP) {
+                TCP tcp_payload = (TCP) ip_payload.getPayload();
+                pm_proto = Protocol.TCP;
+                src_port = tcp_payload.getSourcePort();
+            } else if (protocol == IPv4.PROTOCOL_UDP) {
+                UDP udp_payload = (UDP) ip_payload.getPayload();
+                pm_proto = Protocol.UDP;
+                src_port = udp_payload.getSourcePort();
+            } else {
+                return;
+            }
+
+            PortmappingEntry entry = portmappingExecutor.GetEntry(src_addr, src_port, pm_proto);
+            if (entry == null) {
+                return;
+            }
+            RemoteHostDetail rhost = entry.GetLongestCoveringRhost(dst_addr);
+            if (rhost == null) {
+                return;
+            }
+
+            Set<Path> paths = pathService.getPaths(igd_device_id, host.id());
+            if (paths.isEmpty()) {
+                log.error("No available path found between IGD and internal host : {}", host.toString());
+                return;
+            }
+
+            Path path = paths.iterator().next();
+            PortNumber in_port = igd_ext_port;
+            PortNumber packetOut_port = PortNumber.FLOOD;
+            for (Link link : path.links()) {
+                if (link.src().deviceId().equals(igd_device_id)) {
+                    setNATRoute(igd_device_id, in_port, link.src().port(),
+                            wan_mac, host.mac(), rhost.GetRhostByIpPrefix(), entry, rhost.GetLeaseDuration());
+                } else {
+                    setInternalRoute(link.src().deviceId(), in_port,
+                            link.src().port(), privateMac, host.mac(), rhost.GetLeaseDuration());
+
+                    if (link.src().deviceId().equals(cp.deviceId())) {
+                        packetOut_port = in_port;
+                    }
+                }
+
+                in_port = link.dst().port();
+            }
+
+            TrafficTreatment.Builder action = DefaultTrafficTreatment.builder()
+                .setOutput(packetOut_port);
+            packetService.emit(new DefaultOutboundPacket(
+                cp.deviceId(),
+                action.build(),
+                ByteBuffer.wrap(frame.serialize())
+            ));
+        }
+
         private void processARPRequest(Ethernet eth_frame, ARP req, ConnectPoint cp) {
 
             Ip4Address target_addr = Ip4Address.valueOf(req.getTargetProtocolAddress());
@@ -621,8 +756,11 @@ public class AppComponent {
             TrafficSelector.Builder selector = DefaultTrafficSelector.builder()
                 .matchInPort(in_port)
                 .matchEthType(Ethernet.TYPE_IPV4)
-                .matchIPSrc(rhost)
                 .matchIPDst(igd_ext_ipaddr.toIpPrefix());
+
+            if (!rhost.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
+                selector.matchIPSrc(rhost);
+            }
 
             TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
                 .setEthSrc(privateMac)
@@ -650,8 +788,10 @@ public class AppComponent {
             selector = DefaultTrafficSelector.builder()
                 .matchInPort(out_port)
                 .matchEthType(Ethernet.TYPE_IPV4)
-                .matchIPSrc(ihost_addr.toIpPrefix())
-                .matchIPDst(rhost);
+                .matchIPSrc(ihost_addr.toIpPrefix());
+            if (!rhost.equals(IpPrefix.valueOf("0.0.0.0/0"))) {
+                selector.matchIPDst(rhost);
+            }
 
             treatment = DefaultTrafficTreatment.builder()
                 .setEthSrc(publicMac)
