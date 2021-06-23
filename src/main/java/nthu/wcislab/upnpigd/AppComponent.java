@@ -44,6 +44,8 @@ import org.onosproject.net.flow.criteria.Criterion;
 import org.onosproject.net.flow.DefaultFlowRule;
 import org.onosproject.net.flow.DefaultTrafficSelector;
 import org.onosproject.net.flow.DefaultTrafficTreatment;
+import org.onosproject.net.flow.FlowEntry;
+import org.onosproject.net.flow.FlowId;
 import org.onosproject.net.flow.FlowRule;
 import org.onosproject.net.flow.FlowRuleEvent;
 import org.onosproject.net.flow.FlowRuleService;
@@ -54,6 +56,8 @@ import org.onosproject.net.flow.FlowRule.FlowRemoveReason;
 import org.onosproject.net.flow.criteria.Criterion.Type;
 import org.onosproject.net.host.HostService;
 import org.onosproject.net.Host;
+import org.onosproject.net.host.HostEvent;
+import org.onosproject.net.host.HostListener;
 import org.onosproject.net.HostLocation;
 import org.onosproject.net.Path;
 import org.onosproject.net.topology.PathService;
@@ -67,9 +71,14 @@ import org.onosproject.net.packet.PacketProcessor;
 import org.onosproject.net.packet.PacketService;
 import org.onosproject.net.Link;
 
+import java.util.ArrayList;
 import java.util.Random;
 import java.util.Set;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
+import com.google.common.collect.ForwardingBlockingDeque;
+
 import java.nio.ByteBuffer;
 
 import nthu.wcislab.upnpigd.portmapping.DatapathExecutable;
@@ -120,6 +129,7 @@ public class AppComponent {
     private OPFIfaceWatcher ifaceWatcher;
     private PortmappingExecutor portmappingExecutor;
     private IGDFlowRuleListener flowRuleListener = new IGDFlowRuleListener();
+    private InternalHostListener ihostListener = new InternalHostListener();
 
     /**
      * Device_id and ext_iface_name should be filled in by onos-cfg.
@@ -152,6 +162,7 @@ public class AppComponent {
 
         packetService.addProcessor(processor, PacketProcessor.director(2));
         flowRuleService.addListener(flowRuleListener);
+        hostService.addListener(ihostListener);
 
         log.info("External Mac: {}", publicMac.toString());
         log.info("Internal Mac: {}", privateMac.toString());
@@ -169,6 +180,7 @@ public class AppComponent {
     @Deactivate
     protected void deactivate() {
         withdrawIntercepts();
+        hostService.removeListener(ihostListener);
         flowRuleService.removeFlowRulesById(appId);
         flowRuleService.removeListener(flowRuleListener);
         packetService.removeProcessor(processor);
@@ -264,11 +276,25 @@ public class AppComponent {
             rule_builder.makeTemporary(timeout);
         }
 
-        if (!reason.equals(FlowRemoveReason.NO_REASON)) {
-            rule_builder.withReason(reason);
-        }
-
+        rule_builder.withReason(reason);
         flowRuleService.applyFlowRules(rule_builder.build());
+    }
+
+    /**
+     * Extract Criterion value.
+     * @param cri Criterion to be parsed. It should be in format "[tag]:[value]"
+     * @return value in type string. Empty string will be returned if fail to extract the value.
+     * @throws IllegalArgumentException if given arguments does not has correct format.
+     */
+    public String extractCriterionValue(Criterion cri) throws IllegalArgumentException {
+        try {
+            return cri.toString().split(Criterion.SEPARATOR)[1];
+        } catch (IndexOutOfBoundsException e) {
+            log.error("Fail to extract Criterion value," +
+                " or the criterion does not comply the format [tag]:[value]" +
+                "Got Criterion : {}", cri.toString());
+            throw new IllegalArgumentException();
+        }
     }
 
     private class IGDFlowRuleListener implements FlowRuleListener {
@@ -295,9 +321,6 @@ public class AppComponent {
                             } catch (IllegalArgumentException e) {
                                 log.error("Fail to remove flow {}", rule.toString());
                             }
-                            break;
-                        case DELETE: //triggered by delete method.
-                            log.info("Flow removed: {}", rule.toString());
                             break;
                         case IDLE_TIMEOUT:
                             break;
@@ -336,7 +359,7 @@ public class AppComponent {
             }
 
             if (eport_cri == null) {
-                log.error("Got unusaual deleted rule: {}. No EXT_PORT found.", rule.toString());
+                log.debug("Got unusaual deleted rule: {}. No EXT_PORT found.", rule.toString());
                 return;
             }
 
@@ -349,23 +372,153 @@ public class AppComponent {
                 rhost = extractCriterionValue(rhost_cri);
             }
 
+            ihostListener.RevokeIhost(eport, proto, rhost);
             portmappingExecutor.HandleDatapathTimeout(eport, proto, rhost);
             log.info("Flow removed: {}", rule.toString());
         }
 
-        /**
-         * Extract Criterion value.
-         * @param cri Criterion to be parsed. It should be in format "[tag]:[value]"
-         * @return value in type string. Empty string will be returned if fail to extract the value.
-         */
-        private String extractCriterionValue(Criterion cri) throws IllegalArgumentException {
-            try {
-                return cri.toString().split(Criterion.SEPARATOR)[1];
-            } catch (IndexOutOfBoundsException e) {
-                log.error("Fail to extract Criterion value," +
-                    " or the criterion does not comply the format [tag]:[value]" +
-                    "Got Criterion : {}", cri.toString());
-                throw new IllegalArgumentException();
+    }
+
+    private class InternalHostListener implements HostListener {
+
+        private final class iHostEndpoint {
+            private int iport;
+            private IpPrefix rhost;
+            private int expire_date;
+            private TrafficSelector.Builder selector;
+            private TrafficTreatment.Builder treatment;
+
+            private iHostEndpoint(int iport, IpPrefix rhost, int expire_date,
+                    TrafficSelector.Builder selector, TrafficTreatment.Builder treatment) {
+                this.iport = iport;
+                this.rhost = rhost;
+                this.expire_date = expire_date;
+                this.selector = selector;
+                this.treatment = treatment;
+            }
+        }
+
+        private ConcurrentHashMap<IpAddress, ArrayList<iHostEndpoint>> ihosttable = new ConcurrentHashMap<>();
+
+        public void RegisterIhost(IpAddress ihost, int iport, IpPrefix rhost,
+                TrafficSelector.Builder selector, TrafficTreatment.Builder treatment, int expire_date) {
+            iHostEndpoint new_ihost = new iHostEndpoint(iport, rhost, expire_date, selector, treatment);
+            ArrayList<iHostEndpoint> eps = ihosttable.get(ihost);
+            if (eps == null) {
+                eps = new ArrayList<iHostEndpoint>();
+                eps.add(new_ihost);
+                ihosttable.put(ihost, eps);
+            } else {
+                eps.add(new_ihost);
+            }
+            log.info("Register: {}", ihosttable.toString());
+        }
+
+        public void RevokeIhost(int eport, PortmappingEntry.Protocol proto, String rhost_str) {
+            PortmappingEntry entry = portmappingExecutor.GetEntry(eport, proto);
+            if (entry == null) {
+                return;
+            } else {
+                RevokeIhost(entry.GetInternalHostByIpAddress(),
+                    entry.GetInternalPort(), IpPrefix.valueOf(rhost_str));
+            }
+        }
+
+        public void RevokeIhost(IpAddress ihost, int iport, IpPrefix rhost) {
+            ArrayList<iHostEndpoint> eps = ihosttable.get(ihost);
+            if (eps == null) {
+                return;
+            }
+
+            for (int index = 0; index < eps.size(); index++) {
+                iHostEndpoint ep = eps.get(index);
+                if (ep.iport == iport && ep.rhost.equals(rhost)) {
+                    eps.remove(index);
+                }
+            }
+
+            if (eps.size() == 0) {
+                ihosttable.remove(ihost);
+            }
+            log.info("Revoke: {}", ihosttable.toString());
+        }
+
+        @Override
+        public void event(HostEvent event) {
+            log.info("{}", event.toString());
+            Host host = event.subject();
+            HostLocation hloc = host.location();
+            Set<IpAddress> current_ip = host.ipAddresses();
+
+            switch (event.type()) {
+                case HOST_ADDED:
+                    if (current_ip.isEmpty()) {
+                        return;
+                    }
+
+                    for (IpAddress ipAddress : current_ip) {
+                        addInternalInterceptRule(ipAddress, hloc);
+                    }
+                    break;
+                case HOST_UPDATED:
+                    Set<IpAddress> prev_ip = event.prevSubject().ipAddresses();
+
+                    for (IpAddress ip : prev_ip) {
+                        if (!current_ip.contains(ip)) {
+                            deleteInternalInterceptRule(ip, hloc);
+                        }
+                    }
+
+                    for (IpAddress ip : current_ip) {
+                        if (!prev_ip.contains(ip)) {
+                            addInternalInterceptRule(ip, hloc);
+                        }
+                    }
+                    break;
+                case HOST_REMOVED:
+                    if (current_ip.isEmpty()) {
+                        return;
+                    }
+
+                    for (IpAddress ipAddress : current_ip) {
+                        deleteInternalInterceptRule(ipAddress, hloc);
+                    }
+                    break;
+                default:
+                    log.warn("Unhandled Host Event: {}", event.toString());
+                    break;
+            }
+        }
+
+        private void addInternalInterceptRule(IpAddress ihost_ip, HostLocation hloc) {
+            ArrayList<iHostEndpoint> eps = ihosttable.get(ihost_ip);
+            if (eps == null) {
+                return;
+            }
+
+            for (iHostEndpoint ep : eps) {
+                int priority = nat_intercept_from_lan_priority + ep.rhost.prefixLength();
+                int duration = ep.expire_date - ((int) System.currentTimeMillis()) / 1000;
+                writeFlowRule(hloc.deviceId(), ep.selector, ep.treatment, priority, duration, false);
+            }
+        }
+
+        private void deleteInternalInterceptRule(IpAddress ihost_ip, HostLocation hloc) {
+            ArrayList<iHostEndpoint> eps = ihosttable.get(ihost_ip);
+            if (eps == null) {
+                return;
+            }
+
+            for (iHostEndpoint ep : eps) {
+                int priority = nat_intercept_from_lan_priority + ep.rhost.prefixLength();
+                FlowRule rule = DefaultFlowRule.builder()
+                    .withSelector(ep.selector.build())
+                    .forDevice(hloc.deviceId())
+                    .makeTemporary(0)
+                    .withPriority(priority)
+                    .fromApp(appId)
+                    .build();
+                flowRuleService.removeFlowRules(rule);
             }
         }
     }
@@ -373,10 +526,14 @@ public class AppComponent {
     private class PortmappingProcessor implements DatapathExecutable {
 
         public boolean UpdateRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
-            return AddRuleForEntry(entry, rhost);
+            return addRuleForEntry(entry, rhost, true);
         }
 
         public boolean AddRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost) {
+            return addRuleForEntry(entry, rhost, false);
+        }
+
+        private boolean addRuleForEntry(PortmappingEntry entry, RemoteHostDetail rhost, boolean isUpdate) {
             //Check if the internal host exist.
             Set<Host> hosts = hostService.getHostsByIp(entry.GetInternalHostByIpAddress());
             if (hosts.isEmpty()) {
@@ -398,6 +555,11 @@ public class AppComponent {
 
             priority = nat_intercept_from_lan_priority + rhost.GetRhostByIpPrefix().prefixLength();
             writeFlowRule(hloc.deviceId(), selector, treatment, priority, rhost.GetLeaseDuration(), false);
+
+            if (!isUpdate) {
+                ihostListener.RegisterIhost(entry.GetInternalHostByIpAddress(), entry.GetInternalPort(),
+                        rhost.GetRhostByIpPrefix(), selector, treatment, rhost.GetExpireDate());
+            }
             return true;
         }
 
@@ -433,6 +595,9 @@ public class AppComponent {
                 .fromApp(appId)
                 .build();
             flowRuleService.removeFlowRules(rule);
+
+            ihostListener.RevokeIhost(entry.GetInternalHostByIpAddress(),
+                        entry.GetInternalPort(), rhost.GetRhostByIpPrefix());
             return true;
         }
 

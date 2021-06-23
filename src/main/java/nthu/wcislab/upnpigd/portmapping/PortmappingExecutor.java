@@ -49,16 +49,7 @@ public class PortmappingExecutor {
      * @throws IllegalArgumentException Throw exception if passed entry contains illegal arguments.
      */
     public int AddEntry(PortmappingEntry entry) throws IllegalArgumentException {
-
-        /* Check if an internal entry(iaddr+iport) already exists. */
         ArrayList<Integer> iports = this.internalEntryTable.get(entry.ihost);
-        if (iports != null) {
-            for (Integer iport : iports) {
-                if (iport.equals(entry.iport)) {
-                    return -1;
-                }
-            }
-        }
 
         if (entry.rhost_list.size() != 1 || null == entry.rhost_list.get(0)) {
             throw new IllegalArgumentException("In current version," +
@@ -69,6 +60,15 @@ public class PortmappingExecutor {
 
         PortmappingEntry old = GetEntry(entry.eport, entry.proto);
         if (null == old) {
+            /* Check if an internal entry(iaddr+iport) already exists. */
+            if (iports != null) {
+                for (Integer iport : iports) {
+                    if (iport.equals(entry.iport)) {
+                        return -1;
+                    }
+                }
+            }
+
             if (!datapath.AddRuleForEntry(entry, rhost)) {
                 return 0; //action failed. TBD: Or should be conflictedWithOtherApp
             }
@@ -469,6 +469,10 @@ public class PortmappingExecutor {
 
             public IpPrefix GetRhostByIpPrefix() {
                 return rhost;
+            }
+
+            public int GetExpireDate() {
+                return timestamp;
             }
 
             public int GetLeaseDuration() {
