@@ -153,10 +153,7 @@ public class PortmappingExecutor {
             }
         }
         table.remove(indexer);
-<<<<<<< HEAD
-=======
         removeInternalHostEntry(entry.ihost, entry.iport);
->>>>>>> strict-ihost-version2
 
         return 1;
     }
