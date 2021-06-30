@@ -34,6 +34,7 @@ import org.onlab.packet.MacAddress;
 import org.onlab.packet.TCP;
 import org.onlab.packet.TpPort;
 import org.onlab.packet.UDP;
+import org.onlab.packet.IPacket;
 import org.onosproject.core.CoreService;
 import org.onosproject.core.ApplicationId;
 import org.onosproject.net.ConnectPoint;
@@ -682,7 +683,6 @@ public class AppComponent {
 
         @Override
         public void process(PacketContext packet) {
-
             InboundPacket pkt = packet.inPacket();
             ConnectPoint cp = pkt.receivedFrom();
 
@@ -740,12 +740,13 @@ public class AppComponent {
             byte protocol = ip_payload.getProtocol();
             Protocol pm_proto;
             int dst_port;
+            IPacket tp_payload = ip_payload.getPayload();
             if (protocol == IPv4.PROTOCOL_TCP) {
-                TCP tcp_payload = (TCP) ip_payload.getPayload();
+                TCP tcp_payload = (TCP) tp_payload;
                 pm_proto = Protocol.TCP;
                 dst_port = tcp_payload.getDestinationPort();
             } else if (protocol == IPv4.PROTOCOL_UDP) {
-                UDP udp_payload = (UDP) ip_payload.getPayload();
+                UDP udp_payload = (UDP) tp_payload;
                 pm_proto = Protocol.UDP;
                 dst_port = udp_payload.getDestinationPort();
             } else {
@@ -799,19 +800,34 @@ public class AppComponent {
                 in_port = link.dst().port();
             }
 
-            TrafficTreatment.Builder action = DefaultTrafficTreatment.builder()
-                .setEthSrc(privateMac)
-                .setEthDst(host.mac())
-                .setIpDst(ihost_addr);
+            int ihost_port = entry.GetInternalPort();
+            if (protocol == IPv4.PROTOCOL_TCP) {
+                TCP tcp_payload = (TCP) tp_payload;
+                tcp_payload.setDestinationPort(ihost_port);
+            } else if (protocol == IPv4.PROTOCOL_UDP) {
+                UDP udp_payload = (UDP) ip_payload.getPayload();
+                udp_payload.setDestinationPort(ihost_port);
+            }
+            tp_payload.resetChecksum();
+            ip_payload.setPayload(tp_payload);
 
-            TpPort ihost_port = TpPort.tpPort(entry.GetInternalPort());
-            if (entry.GetProtocol() == Protocol.TCP) {
-                action.setTcpDst(ihost_port);
-            } else {
-                action.setUdpDst(ihost_port);
+            ip_payload.setDestinationAddress(ihost_addr.toString());
+            ip_payload.resetChecksum();
+            frame.setPayload(ip_payload);
+
+            frame.setSourceMACAddress(privateMac);
+            frame.setDestinationMACAddress(host.mac());
+            frame.resetChecksum();
+
+            TrafficTreatment.Builder action = DefaultTrafficTreatment.builder()
+                .setOutput(packetOut_port);
+
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                log.warn("{}", e);
             }
 
-            action.setOutput(packetOut_port);
             packetService.emit(new DefaultOutboundPacket(
                 cp.deviceId(),
                 action.build(),
