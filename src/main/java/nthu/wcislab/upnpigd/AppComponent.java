@@ -823,7 +823,7 @@ public class AppComponent {
                 .setOutput(packetOut_port);
 
             try {
-                Thread.sleep(5);
+                Thread.sleep(3);
             } catch (InterruptedException e) {
                 log.warn("{}", e);
             }
