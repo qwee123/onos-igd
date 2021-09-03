@@ -77,7 +77,6 @@ public class PortmappingSingleHandler extends PortmappingHandler {
     @Override
     protected FullHttpResponse handlePost(FullHttpRequest request) {
         JSONObject jobj = new JSONObject(request.content().toString(UTF_8));
-
         if (jobj.has(json_tag_permit_port_range)) {
             return handleAddAnyPortmapping(jobj);
         } else {
@@ -224,7 +223,6 @@ public class PortmappingSingleHandler extends PortmappingHandler {
             log.error("{}", e.getMessage());
             return BADREQUEST.handle(null);
         }
-
         return handleNormalAddPortmapping(entry);
     }
 

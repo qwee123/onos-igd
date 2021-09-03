@@ -138,7 +138,7 @@ public class AppComponent {
     private final MacAddress wan_mac = MacAddress.valueOf("c2:67:18:3d:bc:ca");
     private final String igd_ext_iface_name = "wan3";
     private final Ip4Address igd_ext_ipaddr = Ip4Address.valueOf("192.168.1.10"); //public address
-    private final int idle_timeout = 20;
+    private final int idle_timeout = 10;
     private final Ip4Address privateIPaddr = Ip4Address.valueOf("172.16.0.1");
     private final MacAddress privateMac = MacAddress.valueOf(randomMACAddress());
     private final MacAddress publicMac = MacAddress.valueOf("8a:7c:6d:cc:6a:89");
@@ -382,24 +382,24 @@ public class AppComponent {
             private int iport;
             private IpPrefix rhost;
             private int expire_date;
-            private TrafficSelector.Builder selector;
-            private TrafficTreatment.Builder treatment;
+            private TrafficSelector.Builder igd_selector;
+            private TrafficSelector.Builder edge_selector;
 
             private iHostEndpoint(int iport, IpPrefix rhost, int expire_date,
-                    TrafficSelector.Builder selector, TrafficTreatment.Builder treatment) {
+                    TrafficSelector.Builder igd_selector, TrafficSelector.Builder edge_selector) {
                 this.iport = iport;
                 this.rhost = rhost;
                 this.expire_date = expire_date;
-                this.selector = selector;
-                this.treatment = treatment;
+                this.igd_selector = igd_selector;
+                this.edge_selector = edge_selector;
             }
         }
 
         private ConcurrentHashMap<IpAddress, ArrayList<iHostEndpoint>> ihosttable = new ConcurrentHashMap<>();
 
         public void RegisterIhost(IpAddress ihost, int iport, IpPrefix rhost,
-                TrafficSelector.Builder selector, TrafficTreatment.Builder treatment, int expire_date) {
-            iHostEndpoint new_ihost = new iHostEndpoint(iport, rhost, expire_date, selector, treatment);
+                TrafficSelector.Builder igd_selector, TrafficSelector.Builder edge_selector, int expire_date) {
+            iHostEndpoint new_ihost = new iHostEndpoint(iport, rhost, expire_date, igd_selector, edge_selector);
             ArrayList<iHostEndpoint> eps = ihosttable.get(ihost);
             if (eps == null) {
                 eps = new ArrayList<iHostEndpoint>();
@@ -463,6 +463,7 @@ public class AppComponent {
                     for (IpAddress ip : prev_ip) {
                         if (!current_ip.contains(ip)) {
                             deleteInternalInterceptRule(ip, hloc);
+                            deleteIGDRedirectRule(ip);
                         }
                     }
 
@@ -479,6 +480,7 @@ public class AppComponent {
 
                     for (IpAddress ipAddress : current_ip) {
                         deleteInternalInterceptRule(ipAddress, hloc);
+                        deleteIGDRedirectRule(ipAddress);
                     }
                     break;
                 default:
@@ -493,10 +495,13 @@ public class AppComponent {
                 return;
             }
 
+            TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
+                .setOutput(PortNumber.CONTROLLER);
+
             for (iHostEndpoint ep : eps) {
                 int priority = nat_intercept_priority + ep.rhost.prefixLength();
                 int duration = ep.expire_date - ((int) System.currentTimeMillis()) / 1000;
-                writeFlowRule(hloc.deviceId(), ep.selector, ep.treatment, priority, duration, false);
+                writeFlowRule(hloc.deviceId(), ep.edge_selector, treatment, priority, duration, false);
             }
         }
 
@@ -509,10 +514,28 @@ public class AppComponent {
             for (iHostEndpoint ep : eps) {
                 int priority = nat_intercept_priority + ep.rhost.prefixLength();
                 FlowRule rule = DefaultFlowRule.builder()
-                    .withSelector(ep.selector.build())
+                    .withSelector(ep.edge_selector.build())
                     .forDevice(hloc.deviceId())
                     .makeTemporary(0)
                     .withPriority(priority)
+                    .fromApp(appId)
+                    .build();
+                flowRuleService.removeFlowRules(rule);
+            }
+        }
+
+        private void deleteIGDRedirectRule(IpAddress ihost_ip) {
+            ArrayList<iHostEndpoint> eps = ihosttable.get(ihost_ip);
+            if (eps == null) {
+                return;
+            }
+
+            for (iHostEndpoint ep : eps) {
+                FlowRule rule = DefaultFlowRule.builder()
+                    .withSelector(ep.igd_selector.build())
+                    .forDevice(igd_device_id)
+                    .makeTemporary(0)
+                    .withPriority(nat_redirect_priority)
                     .fromApp(appId)
                     .build();
                 flowRuleService.removeFlowRules(rule);
@@ -539,23 +562,23 @@ public class AppComponent {
             }
 
             // Set intercept rule on IGDSW
-            TrafficSelector.Builder selector = setInboundInterceptMatchRule(entry, rhost);
+            TrafficSelector.Builder igd_selector = setInboundInterceptMatchRule(entry, rhost);
             TrafficTreatment.Builder treatment = DefaultTrafficTreatment.builder()
                 .setOutput(PortNumber.CONTROLLER);
 
             int priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
-            writeFlowRule(igd_device_id, selector, treatment, priority, rhost.GetLeaseDuration(), false);
+            writeFlowRule(igd_device_id, igd_selector, treatment, priority, rhost.GetLeaseDuration(), false);
 
             // Set intercept rule on ihost connected SW
             HostLocation hloc = hosts.iterator().next().location();
-            selector = setOutboundInterceptMatchRule(hloc, entry, rhost);
+            TrafficSelector.Builder edge_selector = setOutboundInterceptMatchRule(hloc, entry, rhost);
 
             priority = nat_intercept_priority + rhost.GetRhostByIpPrefix().prefixLength();
-            writeFlowRule(hloc.deviceId(), selector, treatment, priority, rhost.GetLeaseDuration(), false);
+            writeFlowRule(hloc.deviceId(), edge_selector, treatment, priority, rhost.GetLeaseDuration(), false);
 
             if (!isUpdate) {
                 ihostListener.RegisterIhost(entry.GetInternalHostByIpAddress(), entry.GetInternalPort(),
-                        rhost.GetRhostByIpPrefix(), selector, treatment, rhost.GetExpireDate());
+                        rhost.GetRhostByIpPrefix(), igd_selector, edge_selector, rhost.GetExpireDate());
             }
             return true;
         }

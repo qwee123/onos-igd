@@ -38,6 +38,7 @@ public class HttpServerHandler extends SimpleChannelInboundHandler<FullHttpReque
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         FullHttpResponse response;
         String uri = request.uri();
+
         QueryStringDecoder queryStringDecoder = new QueryStringDecoder(uri, UTF_8);
 
         try {
